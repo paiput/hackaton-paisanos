@@ -1,13 +1,28 @@
 {
-  "name": "my-v0-project",
-  "version": "0.1.0",
-  "private": true,
+  "name": "game-app-and-server",
+  "version": "1.0.0",
+  "description": "Next.js game client and Socket.IO server",
+  "main": "dist/server.js",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint"
+    "dev:next": "next dev",
+    "build:next": "next build",
+    "start:next": "next start",
+    "lint": "next lint",
+    "dev:server": "ts-node-dev --respawn --transpile-only server/server.ts",
+    "build:server": "tsc -p server/tsconfig.server.json",
+    "start:server": "node dist-server/server.js",
+    "dev": "concurrently \"npm:dev:next\" \"npm:dev:server\"",
+    "build": "npm run build:next && npm run build:server"
   },
+  "keywords": [
+    "game",
+    "websocket",
+    "socket.io",
+    "typescript",
+    "nextjs"
+  ],
+  "author": "",
+  "license": "ISC",
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",
     "@radix-ui/react-accordion": "1.2.2",
@@ -54,6 +69,8 @@
     "react-hook-form": "^7.54.1",
     "react-resizable-panels": "^2.1.7",
     "recharts": "2.15.0",
+    "socket.io": "^4.7.5",
+    "socket.io-client": "^4.8.1",
     "sonner": "^1.7.1",
     "tailwind-merge": "^2.5.5",
     "tailwindcss-animate": "^1.0.7",
@@ -64,8 +81,10 @@
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "concurrently": "^8.2.2",
     "postcss": "^8",
     "tailwindcss": "^3.4.17",
-    "typescript": "^5"
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.4.5"
   }
 }

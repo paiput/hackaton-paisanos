@@ -1,0 +1,23 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "outDir": "../dist-server",
+    "rootDir": ".",
+    "jsx": "react-jsx",
+    "noEmit": false,
+    "isolatedModules": false
+  },
+  "include": [
+    "./server.ts"
+  ],
+  "exclude": [
+    "../node_modules",
+    "../.next",
+    "../app",
+    "../components",
+    "../public",
+    "../lib",
+    "../hooks"
+  ]
+} 
