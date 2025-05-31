@@ -2,11 +2,14 @@
 
 import React, { useEffect, useState, useRef } from 'react';
 import io, { Socket } from 'socket.io-client';
+import { useSpring, animated, to } from '@react-spring/web';
 
 interface PlayerData {
     id: string;
     x: number; // Coordenadas del juego (ej. -500 a 500)
     y: number; // Coordenadas del juego
+    targetX?: number; // Target for spring/interpolation
+    targetY?: number; // Target for spring/interpolation
 }
 
 interface GameState {
@@ -25,6 +28,7 @@ const MOVEMENT_SPEED = 5;
 const CAMERA_LERP_FACTOR = 0.1;
 const MOVE_EMIT_INTERVAL = 16; // ms, ~60 FPS
 const LOCAL_PLAYER_CORRECTION_LERP_FACTOR = 0.15; // Para suavizar la corrección del servidor
+const REMOTE_PLAYER_LERP_FACTOR = 0.15; // For remote player interpolation
 
 const worldToCssX = (worldX: number) => worldX - WORLD_MIN_X;
 const worldToCssY = (worldY: number) => worldY - WORLD_MIN_Y;
@@ -51,22 +55,51 @@ export default function GamePage() {
         newSocket.on('connect', () => { if (newSocket.id) setPlayerId(newSocket.id); });
         newSocket.on('pong_event', (st: number) => setLatency(Date.now() - st));
         newSocket.on('gameState', (gs: GameState) => {
-            setPlayers(gs.players);
-            if (newSocket.id && gs.players[newSocket.id]) {
-                const myInitialState = gs.players[newSocket.id]!;
+            const initialPlayers: { [id: string]: PlayerData } = {};
+            for (const pId in gs.players) {
+                const pData = gs.players[pId]!;
+                initialPlayers[pId] = {
+                    ...pData,
+                    targetX: pData.x, // Initialize target to current
+                    targetY: pData.y,
+                };
+            }
+            setPlayers(initialPlayers);
+
+            if (newSocket.id && initialPlayers[newSocket.id]) {
+                const myInitialState = initialPlayers[newSocket.id]!;
                 if (!localPlayerPosRef.current) {
                     localPlayerPosRef.current = { x: myInitialState.x, y: myInitialState.y };
                 }
                 serverAuthoritativeStateRef.current = { x: myInitialState.x, y: myInitialState.y };
             }
         });
-        newSocket.on('playerJoined', (p: PlayerData) => setPlayers(prev => ({ ...prev, [p.id]: p })));
+        newSocket.on('playerJoined', (p: PlayerData) => {
+            setPlayers(prev => ({ 
+                ...prev, 
+                [p.id]: { 
+                    ...p, 
+                    targetX: p.x, // Initialize target to current
+                    targetY: p.y 
+                } 
+            }));
+        });
         
         newSocket.on('playerMoved', (p: PlayerData) => {
             if (newSocket.id && p.id === newSocket.id) { // Jugador local
                 serverAuthoritativeStateRef.current = { x: p.x, y: p.y };
             } else { // Jugadores remotos
-                setPlayers(prev => ({ ...prev, [p.id]: p })); 
+                setPlayers(prev => {
+                    if (!prev[p.id]) return prev; // Should not happen if playerJoined was processed
+                    return {
+                        ...prev,
+                        [p.id]: {
+                            ...prev[p.id]!,
+                            targetX: p.x, // Update target for remote player
+                            targetY: p.y,
+                        }
+                    };
+                });
             }
         });
 
@@ -111,10 +144,11 @@ export default function GamePage() {
     // useEffect para la inicialización única de localPlayerPosRef si no se hizo en gameState
     useEffect(() => {
         if (playerId && players[playerId] && !localPlayerPosRef.current) {
-            localPlayerPosRef.current = { x: players[playerId]!.x, y: players[playerId]!.y };
+            const pData = players[playerId]!;
+            localPlayerPosRef.current = { x: pData.x, y: pData.y };
             // También inicializar serverAuthoritativeStateRef si no lo hizo gameState
             if (!serverAuthoritativeStateRef.current) {
-                serverAuthoritativeStateRef.current = { x: players[playerId]!.x, y: players[playerId]!.y };
+                serverAuthoritativeStateRef.current = { x: pData.x, y: pData.y };
             }
         }
     }, [playerId, players]);
@@ -124,27 +158,24 @@ export default function GamePage() {
 
         const gameLoop = () => {
             if (!playerId || !localPlayerPosRef.current) { 
-                // Esperar a que localPlayerPosRef se inicialice
                 animationFrameIdRef.current = requestAnimationFrame(gameLoop);
                 return;
             }
 
-            let { x: currentX, y: currentY } = localPlayerPosRef.current;
-            let newX = currentX;
-            let newY = currentY;
+            let { x: currentLocalX, y: currentLocalY } = localPlayerPosRef.current;
+            let newLocalX = currentLocalX;
+            let newLocalY = currentLocalY;
             let movedByInput = false;
 
-            if (keysPressedRef.current['w'] || keysPressedRef.current['arrowup']) { newY -= MOVEMENT_SPEED; movedByInput = true; }
-            if (keysPressedRef.current['s'] || keysPressedRef.current['arrowdown']) { newY += MOVEMENT_SPEED; movedByInput = true; }
-            if (keysPressedRef.current['a'] || keysPressedRef.current['arrowleft']) { newX -= MOVEMENT_SPEED; movedByInput = true; }
-            if (keysPressedRef.current['d'] || keysPressedRef.current['arrowright']) { newX += MOVEMENT_SPEED; movedByInput = true; }
+            if (keysPressedRef.current['w'] || keysPressedRef.current['arrowup']) { newLocalY -= MOVEMENT_SPEED; movedByInput = true; }
+            if (keysPressedRef.current['s'] || keysPressedRef.current['arrowdown']) { newLocalY += MOVEMENT_SPEED; movedByInput = true; }
+            if (keysPressedRef.current['a'] || keysPressedRef.current['arrowleft']) { newLocalX -= MOVEMENT_SPEED; movedByInput = true; }
+            if (keysPressedRef.current['d'] || keysPressedRef.current['arrowright']) { newLocalX += MOVEMENT_SPEED; movedByInput = true; }
 
-            // Aplicar movimiento predictivo
             if(movedByInput){
-                localPlayerPosRef.current = { x: newX, y: newY };
+                localPlayerPosRef.current = { x: newLocalX, y: newLocalY };
             }
 
-            // Aplicar corrección suave del servidor si existe estado autoritativo
             if (serverAuthoritativeStateRef.current) {
                 localPlayerPosRef.current.x += 
                     (serverAuthoritativeStateRef.current.x - localPlayerPosRef.current.x) * LOCAL_PLAYER_CORRECTION_LERP_FACTOR;
@@ -152,32 +183,51 @@ export default function GamePage() {
                     (serverAuthoritativeStateRef.current.y - localPlayerPosRef.current.y) * LOCAL_PLAYER_CORRECTION_LERP_FACTOR;
             }
             
-            // Aplicar límites del mundo a la posición potencialmente corregida
             localPlayerPosRef.current.x = Math.max(WORLD_MIN_X, Math.min(localPlayerPosRef.current.x, WORLD_MAX_X - PLAYER_SIZE));
             localPlayerPosRef.current.y = Math.max(WORLD_MIN_Y, Math.min(localPlayerPosRef.current.y, WORLD_MAX_Y - PLAYER_SIZE));
 
-            // Actualizar el estado de React para renderizar (predicción + corrección suave)
-            // Y determinar si hubo un cambio real para emitir al servidor
-            const posChanged = localPlayerPosRef.current.x !== currentX || localPlayerPosRef.current.y !== currentY;
+            const localPosActuallyChanged = localPlayerPosRef.current.x !== currentLocalX || localPlayerPosRef.current.y !== currentLocalY;
 
-            if (posChanged) {
-                 setPlayers(prev => {
-                    if (!playerId || !prev[playerId]) return prev; 
-                    return { 
-                        ...prev, 
-                        [playerId]: { 
-                            ...prev[playerId]!, 
-                            x: localPlayerPosRef.current!.x, 
-                            y: localPlayerPosRef.current!.y 
-                        }
+            // Update all players state, including interpolation for remotes
+            setPlayers(prevPlayers => {
+                const updatedPlayers = { ...prevPlayers };
+
+                // Update local player's visual state
+                if (playerId && updatedPlayers[playerId]) {
+                    updatedPlayers[playerId] = {
+                        ...updatedPlayers[playerId]!,
+                        x: localPlayerPosRef.current!.x,
+                        y: localPlayerPosRef.current!.y,
+                        targetX: localPlayerPosRef.current!.x, // Target is self for local player's own representation
+                        targetY: localPlayerPosRef.current!.y,
                     };
-                });
-            }
+                }
 
-            // Emitir movimiento al servidor
-            // Solo emitir si hubo movimiento por input, o si la corrección del servidor nos movió significativamente.
-            // La condición `posChanged` ya cubre esto.
-            if (posChanged) { // Podríamos usar `movedByInput` o refinar esta condición
+                // Interpolate remote players
+                for (const pId in updatedPlayers) {
+                    if (pId === playerId) continue; // Skip local player
+
+                    const player = updatedPlayers[pId]!;
+                    if (player.targetX !== undefined && player.targetY !== undefined) {
+                        const dx = player.targetX - player.x;
+                        const dy = player.targetY - player.y;
+
+                        if (Math.abs(dx) < 0.1 && Math.abs(dy) < 0.1) {
+                            player.x = player.targetX;
+                            player.y = player.targetY;
+                        } else {
+                            player.x += dx * REMOTE_PLAYER_LERP_FACTOR;
+                            player.y += dy * REMOTE_PLAYER_LERP_FACTOR;
+                        }
+                        // Ensure remote players also respect world bounds visually
+                        player.x = Math.max(WORLD_MIN_X, Math.min(player.x, WORLD_MAX_X - PLAYER_SIZE));
+                        player.y = Math.max(WORLD_MIN_Y, Math.min(player.y, WORLD_MAX_Y - PLAYER_SIZE));
+                    }
+                }
+                return updatedPlayers;
+            });
+
+            if (localPosActuallyChanged) {
                 const now = Date.now();
                 if (now - lastMoveEmitTimeRef.current > MOVE_EMIT_INTERVAL) {
                     socket.emit('move', { x: localPlayerPosRef.current.x, y: localPlayerPosRef.current.y });
@@ -283,8 +333,37 @@ export default function GamePage() {
                         if (!player || !player.id) return null;
                         const cssX = worldToCssX(player.x);
                         const cssY = worldToCssY(player.y);
+
+                        // Track previous position for movement direction
+                        const prevPosRef = useRef({ x: cssX, y: cssY });
+                        const isMoving = prevPosRef.current.x !== cssX || prevPosRef.current.y !== cssY;
+                        
+                        // Calculate movement direction for tilt effect
+                        const moveX = cssX - prevPosRef.current.x;
+                        const moveY = cssY - prevPosRef.current.y;
+                        const movementAngle = Math.atan2(moveY, moveX) * (180 / Math.PI);
+                        
+                        // Update previous position
+                        prevPosRef.current = { x: cssX, y: cssY };
+
+                        const springs = useSpring({
+                            to: {
+                                x: cssX,
+                                y: cssY,
+                                scale: isMoving ? 1.1 : 1,
+                                rotate: isMoving ? `${moveX > 0 ? 15 : -15}deg` : '0deg',
+                                squish: isMoving ? 0.8 : 1,
+                            },
+                            config: {
+                                tension: 380,
+                                friction: 20,
+                                mass: 1,
+                            },
+                            immediate: player.id === playerId,
+                        });
+
                         return (
-                            <div
+                            <animated.div
                                 key={player.id}
                                 ref={el => { 
                                     if (player.id) { 
@@ -295,22 +374,43 @@ export default function GamePage() {
                                 id={`player-${player.id}`}
                                 style={{
                                     position: 'absolute',
-                                    left: `${cssX}px`,
-                                    top: `${cssY}px`,
+                                    transform: to(
+                                        [springs.x, springs.y, springs.scale, springs.rotate, springs.squish],
+                                        (x, y, s, r, sq) => 
+                                        `translate(${x}px, ${y}px) scale(${s}) rotate(${r}) scaleY(${sq})`
+                                    ),
                                     width: `${PLAYER_SIZE}px`,
                                     height: `${PLAYER_SIZE}px`,
                                     backgroundColor: player.id === playerId ? 'hsl(200, 100%, 60%)' : 'hsl(0, 70%, 50%)',
                                     borderRadius: '50%',
                                     border: '2px solid rgba(255,255,255,0.7)',
-                                    boxShadow: player.id === playerId ? '0 0 10px hsl(200, 100%, 75%)' : '0 0 5px black',
-                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                    color: 'white', fontSize: '12px', fontWeight: 'bold',
-                                    zIndex: player.id === playerId ? 3 : 1, 
-                                    transition: player.id === playerId ? 'none' : 'left 0.06s linear, top 0.06s linear',
+                                    boxShadow: player.id === playerId 
+                                        ? '0 0 10px hsl(200, 100%, 75%)' 
+                                        : isMoving 
+                                            ? '0 0 15px rgba(255,255,255,0.3)' 
+                                            : '0 0 5px black',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    color: 'white',
+                                    fontSize: '12px',
+                                    fontWeight: 'bold',
+                                    zIndex: player.id === playerId ? 3 : 1,
+                                    willChange: 'transform',
                                 }}
                                 title={`Player ${player.id}`}
                             >
-                            </div>
+                                <animated.div
+                                    style={{
+                                        width: '100%',
+                                        height: '100%',
+                                        borderRadius: '50%',
+                                        background: isMoving 
+                                            ? 'radial-gradient(circle at 30% 30%, rgba(255,255,255,0.4) 0%, rgba(255,255,255,0) 60%)'
+                                            : 'radial-gradient(circle at 30% 30%, rgba(255,255,255,0.2) 0%, rgba(255,255,255,0) 60%)',
+                                    }}
+                                />
+                            </animated.div>
                         );
                     })}
                 </div>
