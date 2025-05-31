@@ -194,6 +194,9 @@ export default function PizzaDeliveryGame() {
   // Cámara que sigue al jugador con zoom
   const camera = useRef<Vector2>({ x: 0, y: 0 })
 
+  // Add state to track which input method is being used
+  const [aimMethod, setAimMethod] = useState<"mouse" | "space">("mouse");
+
   // ===== GENERACIÓN DE CIUDAD =====
   /**
    * Genera los edificios y estructura de la ciudad
@@ -658,6 +661,15 @@ export default function PizzaDeliveryGame() {
           maxSpeed: Math.max(SPEED_MIN, prev.maxSpeed - SPEED_STEP)
         }))
       }
+
+      // Comenzar carga de pizza con espacio
+      if (e.key === " " && gameState.gameStarted && !gameState.gameOver && !isPaused) {
+        setGameState((prev) => {
+          if (prev.stunned > 0 || prev.pizzasRemaining <= 0) return prev;
+          return { ...prev, isCharging: true };
+        });
+        setAimMethod("space");
+      }
     }
 
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -669,6 +681,38 @@ export default function PizzaDeliveryGame() {
           ...prev,
           isBraking: false,
         }))
+      }
+
+      // Lanzar pizza al soltar espacio
+      if (e.key === " " && !isPaused) {
+        setGameState((prev) => {
+          if (prev.isCharging && prev.stunned <= 0 && prev.pizzasRemaining > 0) {
+            // Use player's rotation to determine direction
+            const normalizedX = Math.cos(prev.player.rotation);
+            const normalizedY = Math.sin(prev.player.rotation);
+            const power = prev.chargePower;
+
+            const newPizza: Pizza = {
+              position: { ...prev.player.position },
+              velocity: {
+                x: normalizedX * power,
+                y: normalizedY * power,
+              },
+              active: true,
+              delivered: false,
+              sliding: true,
+            };
+
+            return {
+              ...prev,
+              pizzas: [...prev.pizzas, newPizza],
+              isCharging: false,
+              chargePower: 0,
+              pizzasRemaining: prev.pizzasRemaining - 1,
+            };
+          }
+          return { ...prev, isCharging: false, chargePower: 0 };
+        });
       }
     }
 
@@ -686,6 +730,7 @@ export default function PizzaDeliveryGame() {
         // Click izquierdo
         mouseRef.current.down = true
         setGameState((prev) => ({ ...prev, isCharging: true }))
+        setAimMethod("mouse")
       }
     }
 
@@ -1507,16 +1552,27 @@ export default function PizzaDeliveryGame() {
 
     // ===== DIBUJAR INDICADOR DE CARGA =====
     if (gameState.isCharging && gameState.pizzasRemaining > 0) {
-      // Línea de apuntado (ajustada para zoom)
-      const worldMouseX = (mouseRef.current.x - CANVAS_WIDTH / 2) / CAMERA_ZOOM + gameState.player.position.x
-      const worldMouseY = (mouseRef.current.y - CANVAS_HEIGHT / 2) / CAMERA_ZOOM + gameState.player.position.y
+      let targetX: number, targetY: number;
+
+      if (aimMethod === "mouse") {
+        // Línea de apuntado hacia el mouse (ajustada para zoom)
+        const worldMouseX = (mouseRef.current.x - CANVAS_WIDTH / 2) / CAMERA_ZOOM + gameState.player.position.x;
+        const worldMouseY = (mouseRef.current.y - CANVAS_HEIGHT / 2) / CAMERA_ZOOM + gameState.player.position.y;
+        targetX = worldMouseX - camera.current.x;
+        targetY = worldMouseY - camera.current.y;
+      } else {
+        // Línea de apuntado en dirección del jugador
+        const distance = 100; // Longitud de la línea
+        targetX = playerScreenX + Math.cos(gameState.player.rotation) * distance;
+        targetY = playerScreenY + Math.sin(gameState.player.rotation) * distance;
+      }
 
       ctx.strokeStyle = "#ff6b6b"
       ctx.lineWidth = 3
       ctx.setLineDash([5, 5])
       ctx.beginPath()
       ctx.moveTo(playerScreenX, playerScreenY)
-      ctx.lineTo(worldMouseX - camera.current.x, worldMouseY - camera.current.y)
+      ctx.lineTo(targetX, targetY)
       ctx.stroke()
       ctx.setLineDash([])
 
@@ -1578,7 +1634,7 @@ export default function PizzaDeliveryGame() {
       ctx.lineWidth = 2;
       ctx.stroke();
     }
-  }, [gameState, drawSprite])
+  }, [gameState, drawSprite, aimMethod])
 
   // ===== FUNCIONES AUXILIARES =====
   /**
