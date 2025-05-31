@@ -17,6 +17,7 @@ export interface NetworkPlayer {
     currentSpeed: number;
     maxSpeed: number;
     score: number;
+    isReady: boolean;
 }
 
 // Estado completo del juego en red
@@ -40,6 +41,7 @@ export interface PlayerUpdateEvent {
     isCharging: boolean;
     chargePower: number;
     name?: string;
+    isReady: boolean;
 }
 
 export interface ThrowPizzaEvent {
@@ -72,4 +74,4 @@ export interface PlayerCollisionEvent {
     playerId: string;
     type: 'building' | 'vehicle';
     position: Vector2;
-} 
+}

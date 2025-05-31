@@ -25,19 +25,30 @@ export type GameClientCallbacks = {
 
 export class GameClient {
     private socket: Socket | null = null;
+    private playerId: string = '';
+    private playerName: string = '';
+    private isReady: boolean = false;
     private callbacks: GameClientCallbacks = {};
     private pingInterval: NodeJS.Timeout | null = null;
 
-    constructor(private serverUrl: string) {}
+    constructor(private serverUrl: string) {
+        this.socket = io(this.serverUrl);
+    }
 
     public connect(callbacks: GameClientCallbacks = {}): void {
-        if (this.socket?.connected) {
-            console.warn('Client is already connected');
-            return;
+        this.callbacks = callbacks;
+
+        if (!this.socket) {
+            this.socket = io(this.serverUrl);
         }
 
-        this.callbacks = callbacks;
-        this.socket = io(this.serverUrl);
+        this.socket.on(SocketEvents.Connect, () => {
+            if (this.socket?.id) {
+                this.playerId = this.socket.id;
+                this.callbacks.onConnect?.(this.playerId);
+            }
+        });
+
         this.setupEventHandlers();
         this.startPingInterval();
     }
@@ -53,12 +64,6 @@ export class GameClient {
 
     private setupEventHandlers(): void {
         if (!this.socket) return;
-
-        this.socket.on(SocketEvents.Connect, () => {
-            if (this.socket?.id) {
-                this.callbacks.onConnect?.(this.socket.id);
-            }
-        });
 
         this.socket.on(SocketEvents.Disconnect, () => {
             this.callbacks.onDisconnect?.();
@@ -137,7 +142,13 @@ export class GameClient {
     }
 
     public updatePlayer(data: PlayerUpdateEvent): void {
-        this.socket?.emit(SocketEvents.PlayerUpdate, data);
+        if (this.socket) {
+            this.socket.emit(SocketEvents.PlayerUpdate, {
+                ...data,
+                name: this.playerName,
+                isReady: this.isReady
+            });
+        }
     }
 
     public throwPizza(data: ThrowPizzaEvent): void {
@@ -165,10 +176,32 @@ export class GameClient {
     }
 
     public getId(): string | null {
-        return this.socket?.id ?? null;
+        return this.playerId;
     }
 
     public setPlayerName(name: string): void {
+        this.playerName = name;
         this.socket?.emit(SocketEvents.SetPlayerName, name);
     }
-} 
+
+    public setReady(ready: boolean) {
+        this.isReady = ready;
+        this.updatePlayer({
+            id: this.playerId,
+            position: { x: 0, y: 0 },
+            rotation: 0,
+            velocity: { x: 0, y: 0 },
+            isCharging: false,
+            chargePower: 0,
+            name: this.playerName,
+            isReady: ready
+        });
+    }
+
+    public signalDeliveryComplete(points: number): void {
+        this.socket?.emit(SocketEvents.DeliveryComplete, {
+            playerId: this.playerId,
+            points
+        });
+    }
+}
