@@ -833,6 +833,11 @@ export default function PizzaDeliveryGame() {
           );
         }
 
+        // TOPE DURO: nunca superar la velocidad máxima
+        if (newState.currentSpeed > newState.maxSpeed) {
+          newState.currentSpeed = newState.maxSpeed;
+        }
+
         // ===== VERIFICAR CONDICIÓN DE VICTORIA =====
         if (newState.deliveriesCompleted >= REQUIRED_DELIVERIES) {
           newState.gameOver = true
@@ -1018,11 +1023,13 @@ export default function PizzaDeliveryGame() {
                 const points = Math.floor(accuracy * 150) + 50 // 50-200 puntos
                 newState.score += points
 
-                // Avanzar a la siguiente entrega
-                currentPoint.active = false
-                newState.deliveriesCompleted++
-                newState.currentDelivery++
+                // Actualizar contador de entregas
+                newState.deliveriesCompleted = (newState.deliveriesCompleted || 0) + 1
 
+                // Desactivar todos los puntos
+                newState.deliveryPoints.forEach((p) => { p.active = false })
+                // Avanzar a la siguiente entrega
+                newState.currentDelivery++
                 // Activar el siguiente punto de entrega si existe
                 if (newState.currentDelivery < newState.deliveryPoints.length) {
                   newState.deliveryPoints[newState.currentDelivery].active = true
@@ -1576,7 +1583,7 @@ export default function PizzaDeliveryGame() {
             <div className="flex items-center gap-2">
               <span>🚦</span>
               <span>
-                Velocidad: {gameState.maxSpeed <= 1.0 ? "Baja" : gameState.maxSpeed >= 3.0 ? "Alta" : "Media"} ({(gameState.maxSpeed * 36).toFixed(0)} km/h)
+                Velocidad: {(gameState.currentSpeed * 36).toFixed(0)}/{(gameState.maxSpeed * 36).toFixed(0)} km/h
               </span>
             </div>
             {gameState.stunned > 0 && <div className="text-red-400 font-bold animate-pulse">💫 ¡ATURDIDO!</div>}
