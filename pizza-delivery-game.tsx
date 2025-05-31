@@ -46,6 +46,17 @@ interface Vehicle {
   speed: number
   targetDirection: Vector2 // Dirección objetivo
   lastIntersection: Vector2 // Última intersección visitada
+  route: Route // Nueva propiedad para la ruta
+  routeProgress: number // Progreso en la ruta actual
+  minDistanceToOtherVehicles: number // Distancia mínima a otros vehículos
+}
+
+// Nueva interfaz para las rutas
+interface Route {
+  points: Vector2[] // Puntos de la ruta
+  type: "circular" | "linear" | "random" // Tipo de ruta
+  currentPointIndex: number // Índice del punto actual
+  isLooping: boolean // Si la ruta es circular
 }
 
 // Edificios y decoraciones de la ciudad
@@ -76,7 +87,10 @@ interface GameState {
   mousePos: Vector2
   pizzasRemaining: number
   deliveriesCompleted: number
-  playerPreviousRotation: number // Nueva propiedad para guardar la rotación previa
+  playerPreviousRotation: number
+  isBraking: boolean
+  brakeCooldown: number
+  currentSpeed: number
 }
 
 // ===== CONSTANTES DEL JUEGO =====
@@ -84,16 +98,31 @@ const CANVAS_WIDTH = 1200 // Ancho del canvas
 const CANVAS_HEIGHT = 800 // Alto del canvas
 const CITY_WIDTH = 2400 // Ancho total de la ciudad
 const CITY_HEIGHT = 1600 // Alto total de la ciudad
-const PLAYER_SPEED = 2.5 // Velocidad constante de la moto
+const PLAYER_SPEED = 2.0 // Velocidad base reducida
+const PLAYER_TURN_SPEED = 0.06 // Sensibilidad de giro reducida
+const PLAYER_BRAKE_SPEED = 0.8 // Velocidad durante el frenado
+const PLAYER_BRAKE_DURATION = 120 // Duración máxima del frenado en frames (2 segundos)
+const PLAYER_BRAKE_COOLDOWN = 600 // Tiempo de espera entre frenados en frames (10 segundos)
 const MAX_CHARGE_POWER = 15 // Máxima potencia de lanzamiento
-const STUN_DURATION = 120 // Duración del aturdimiento en frames
+const STUN_DURATION = 60 // Duración del aturdimiento reducida (1 segundo)
 const GAME_DURATION = 300 // Duración del juego en segundos
 const TOTAL_PIZZAS = 15 // Total de pizzas disponibles
 const REQUIRED_DELIVERIES = 10 // Entregas necesarias para ganar
 const BLOCK_SIZE = 200 // Tamaño de cada bloque de ciudad
 const STREET_WIDTH = 100 // Ancho de las calles (aumentado de 60 a 100)
 const CAMERA_ZOOM = 1.3 // Factor de zoom de la cámara (nuevo)
-const RECOVERY_SPEED = 0.05 // Velocidad de recuperación de dirección
+const RECOVERY_SPEED = 0.08 // Velocidad de recuperación aumentada
+
+// Constantes para el sistema de rutas
+const ROUTE_TYPES = {
+  CIRCULAR: "circular",
+  LINEAR: "linear",
+  RANDOM: "random",
+} as const
+
+const MIN_VEHICLE_DISTANCE = 50 // Distancia mínima entre vehículos
+const ROUTE_UPDATE_INTERVAL = 60 // Frames entre actualizaciones de ruta
+const ROUTE_POINT_RADIUS = 30 // Radio para considerar que se alcanzó un punto
 
 export default function PizzaDeliveryGame() {
   // ===== REFS Y ESTADO =====
@@ -128,7 +157,10 @@ export default function PizzaDeliveryGame() {
     mousePos: { x: 0, y: 0 },
     pizzasRemaining: TOTAL_PIZZAS,
     deliveriesCompleted: 0,
-    playerPreviousRotation: 0, // Inicializar en 0
+    playerPreviousRotation: 0,
+    isBraking: false,
+    brakeCooldown: 0,
+    currentSpeed: PLAYER_SPEED,
   })
 
   // Cámara que sigue al jugador con zoom
@@ -275,15 +307,151 @@ export default function PizzaDeliveryGame() {
   }, [])
 
   /**
-   * Genera vehículos en posiciones válidas de la ciudad
+   * Genera una ruta para un vehículo basada en su posición inicial
    */
+  const generateVehicleRoute = useCallback(
+    (startPos: Vector2, buildings: Building[]): Route => {
+      const points: Vector2[] = []
+      const numPoints = 4 // Número fijo de puntos para la ruta
+
+      // Encontrar la intersección más cercana para alinear el vehículo
+      const startIntersection = findNearestIntersection(startPos.x, startPos.y)
+      points.push(startIntersection)
+
+      // Generar puntos adicionales en líneas rectas
+      let currentPos = { ...startIntersection }
+      let currentDirection = Math.random() < 0.5 ? { x: 1, y: 0 } : { x: 0, y: 1 } // Comenzar horizontal o vertical
+
+      for (let i = 1; i < numPoints; i++) {
+        // Decidir si girar o seguir recto
+        const shouldTurn = Math.random() < 0.3 // 30% de probabilidad de girar
+
+        if (shouldTurn) {
+          // Girar 90 grados
+          if (currentDirection.x !== 0) {
+            // Si va horizontal, girar vertical
+            currentDirection = { x: 0, y: Math.random() < 0.5 ? 1 : -1 }
+          } else {
+            // Si va vertical, girar horizontal
+            currentDirection = { x: Math.random() < 0.5 ? 1 : -1, y: 0 }
+          }
+        }
+
+        // Calcular siguiente punto
+        const nextPos = {
+          x: currentPos.x + currentDirection.x * BLOCK_SIZE,
+          y: currentPos.y + currentDirection.y * BLOCK_SIZE,
+        }
+
+        // Verificar que el punto esté dentro de los límites y en una calle
+        if (
+          nextPos.x >= 0 &&
+          nextPos.x < CITY_WIDTH &&
+          nextPos.y >= 0 &&
+          nextPos.y < CITY_HEIGHT &&
+          isOnStreet(nextPos.x, nextPos.y, { x: 40, y: 40 }, buildings)
+        ) {
+          points.push(nextPos)
+          currentPos = nextPos
+        } else {
+          // Si el punto no es válido, invertir dirección
+          currentDirection = { x: -currentDirection.x, y: -currentDirection.y }
+          i-- // Intentar de nuevo con la nueva dirección
+        }
+      }
+
+      return {
+        points,
+        type: "linear",
+        currentPointIndex: 0,
+        isLooping: true,
+      }
+    },
+    [isOnStreet, findNearestIntersection],
+  )
+
+  /**
+   * Actualiza la posición de un vehículo siguiendo su ruta
+   */
+  const updateVehiclePosition = useCallback(
+    (vehicle: Vehicle, buildings: Building[], vehicles: Vehicle[]): void => {
+      const route = vehicle.route
+      if (!route.points.length) return
+
+      const currentPoint = route.points[route.currentPointIndex]
+      const dx = currentPoint.x - vehicle.position.x
+      const dy = currentPoint.y - vehicle.position.y
+      const distance = Math.sqrt(dx * dx + dy * dy)
+
+      // Si llegamos al punto actual, avanzar al siguiente
+      if (distance < ROUTE_POINT_RADIUS) {
+        route.currentPointIndex = (route.currentPointIndex + 1) % route.points.length
+      }
+
+      // Calcular dirección hacia el siguiente punto
+      const targetPoint = route.points[route.currentPointIndex]
+      const targetDx = targetPoint.x - vehicle.position.x
+      const targetDy = targetPoint.y - vehicle.position.y
+
+      // Determinar si el movimiento es horizontal o vertical
+      const isHorizontal = Math.abs(targetDx) > Math.abs(targetDy)
+      const targetDirection = {
+        x: isHorizontal ? Math.sign(targetDx) : 0,
+        y: isHorizontal ? 0 : Math.sign(targetDy),
+      }
+
+      // Actualizar dirección y rotación
+      vehicle.targetDirection = targetDirection
+      vehicle.rotation = Math.atan2(targetDirection.y, targetDirection.x)
+
+      // Verificar colisiones con otros vehículos
+      let shouldSlowDown = false
+      for (const otherVehicle of vehicles) {
+        if (otherVehicle === vehicle) continue
+
+        const dx = otherVehicle.position.x - vehicle.position.x
+        const dy = otherVehicle.position.y - vehicle.position.y
+        const distance = Math.sqrt(dx * dx + dy * dy)
+
+        if (distance < MIN_VEHICLE_DISTANCE) {
+          shouldSlowDown = true
+          break
+        }
+      }
+
+      // Aplicar velocidad
+      const speed = shouldSlowDown ? vehicle.speed * 0.5 : vehicle.speed
+      vehicle.velocity.x = vehicle.targetDirection.x * speed
+      vehicle.velocity.y = vehicle.targetDirection.y * speed
+
+      // Actualizar posición
+      const newX = vehicle.position.x + vehicle.velocity.x
+      const newY = vehicle.position.y + vehicle.velocity.y
+
+      // Verificar colisiones con edificios
+      if (isOnStreet(newX, newY, vehicle.size, buildings)) {
+        vehicle.position.x = newX
+        vehicle.position.y = newY
+      } else {
+        // Si hay colisión, buscar una nueva ruta
+        vehicle.route = generateVehicleRoute(vehicle.position, buildings)
+      }
+
+      // Mantener vehículo dentro de los límites
+      vehicle.position.x = Math.max(50, Math.min(CITY_WIDTH - 50, vehicle.position.x))
+      vehicle.position.y = Math.max(50, Math.min(CITY_HEIGHT - 50, vehicle.position.y))
+    },
+    [isOnStreet, generateVehicleRoute],
+  )
+
+  // Modificar la función generateVehicles para usar el nuevo sistema de rutas
   const generateVehicles = useCallback(
     (buildings: Building[]): Vehicle[] => {
       const vehicles: Vehicle[] = []
       const colors = ["#ff4444", "#4444ff", "#44ff44", "#ffff44", "#ff44ff", "#44ffff"]
       const types: ("car" | "truck")[] = ["car", "car", "car", "truck"]
+      const routeTypes: ("circular" | "linear" | "random")[] = ["circular", "linear", "random"]
 
-      // Aumentar cantidad de vehículos
       for (let i = 0; i < 15; i++) {
         let attempts = 0
         while (attempts < 50) {
@@ -292,28 +460,23 @@ export default function PizzaDeliveryGame() {
           const type = types[Math.floor(Math.random() * types.length)]
           const size = type === "truck" ? { x: 40, y: 20 } : { x: 25, y: 15 }
 
-          // Verificar que el vehículo esté en una calle
           if (isOnStreet(x, y, size, buildings)) {
-            // Direcciones posibles: norte, sur, este, oeste
-            const directions = [
-              { x: 0, y: -1 }, // Norte
-              { x: 0, y: 1 }, // Sur
-              { x: 1, y: 0 }, // Este
-              { x: -1, y: 0 }, // Oeste
-            ]
-
-            const randomDirection = directions[Math.floor(Math.random() * directions.length)]
+            const routeType = routeTypes[Math.floor(Math.random() * routeTypes.length)]
+            const route = generateVehicleRoute({ x, y }, buildings)
 
             vehicles.push({
               position: { x, y },
               velocity: { x: 0, y: 0 },
-              rotation: Math.atan2(randomDirection.y, randomDirection.x),
+              rotation: 0,
               size,
               type,
               color: colors[Math.floor(Math.random() * colors.length)],
               speed: 1 + Math.random() * 0.5,
-              targetDirection: randomDirection,
-              lastIntersection: findNearestIntersection(x, y),
+              targetDirection: { x: 0, y: 0 },
+              lastIntersection: { x, y },
+              route,
+              routeProgress: 0,
+              minDistanceToOtherVehicles: MIN_VEHICLE_DISTANCE,
             })
             break
           }
@@ -322,7 +485,7 @@ export default function PizzaDeliveryGame() {
       }
       return vehicles
     },
-    [isOnStreet, findNearestIntersection],
+    [isOnStreet, generateVehicleRoute],
   )
 
   // ===== INICIALIZACIÓN DEL JUEGO =====
@@ -366,7 +529,10 @@ export default function PizzaDeliveryGame() {
       stunned: 0,
       pizzasRemaining: TOTAL_PIZZAS,
       deliveriesCompleted: 0,
-      playerPreviousRotation: 0, // Inicializar también aquí
+      playerPreviousRotation: 0,
+      isBraking: false,
+      brakeCooldown: 0,
+      currentSpeed: PLAYER_SPEED,
     }))
     setIsPaused(false)
   }, [generateCity, generateDeliveryPoints, generateVehicles, isOnStreet])
@@ -383,10 +549,32 @@ export default function PizzaDeliveryGame() {
       if (e.key.toLowerCase() === "escape" && gameState.gameStarted && !gameState.gameOver) {
         setIsPaused((prev) => !prev)
       }
+
+      // Sistema de frenado con Shift
+      if (e.key.toLowerCase() === "shift" && gameState.gameStarted && !gameState.gameOver) {
+        setGameState((prev) => {
+          if (prev.brakeCooldown <= 0 && !prev.isBraking) {
+            return {
+              ...prev,
+              isBraking: true,
+              brakeCooldown: PLAYER_BRAKE_COOLDOWN,
+            }
+          }
+          return prev
+        })
+      }
     }
 
     const handleKeyUp = (e: KeyboardEvent) => {
       keysRef.current.delete(e.key.toLowerCase())
+
+      // Liberar freno al soltar Shift
+      if (e.key.toLowerCase() === "shift") {
+        setGameState((prev) => ({
+          ...prev,
+          isBraking: false,
+        }))
+      }
     }
 
     const handleMouseMove = (e: MouseEvent) => {
@@ -533,6 +721,25 @@ export default function PizzaDeliveryGame() {
           return newState
         }
 
+        // ===== ACTUALIZAR FRENADO =====
+        if (newState.brakeCooldown > 0) {
+          newState.brakeCooldown--
+        }
+
+        if (newState.isBraking) {
+          // Reducir velocidad gradualmente
+          newState.currentSpeed = Math.max(
+            PLAYER_BRAKE_SPEED,
+            newState.currentSpeed - (PLAYER_SPEED - PLAYER_BRAKE_SPEED) / 30,
+          )
+        } else {
+          // Recuperar velocidad gradualmente
+          newState.currentSpeed = Math.min(
+            PLAYER_SPEED,
+            newState.currentSpeed + (PLAYER_SPEED - PLAYER_BRAKE_SPEED) / 30,
+          )
+        }
+
         // ===== VERIFICAR CONDICIÓN DE VICTORIA =====
         if (newState.deliveriesCompleted >= REQUIRED_DELIVERIES) {
           newState.gameOver = true
@@ -558,16 +765,16 @@ export default function PizzaDeliveryGame() {
           let rotationChange = 0
 
           // Control de rotación con A/D
-          if (keysRef.current.has("a")) rotationChange -= 0.08
-          if (keysRef.current.has("d")) rotationChange += 0.08
+          if (keysRef.current.has("a")) rotationChange -= PLAYER_TURN_SPEED
+          if (keysRef.current.has("d")) rotationChange += PLAYER_TURN_SPEED
           if (keysRef.current.has("w")) rotationChange += 0 // W no hace nada (siempre avanza)
           if (keysRef.current.has("s")) rotationChange += Math.PI * 0.02 // S hace giro brusco
 
           newState.player.rotation += rotationChange
 
-          // La moto SIEMPRE se mueve hacia adelante
-          newState.player.velocity.x = Math.cos(newState.player.rotation) * PLAYER_SPEED
-          newState.player.velocity.y = Math.sin(newState.player.rotation) * PLAYER_SPEED
+          // La moto SIEMPRE se mueve hacia adelante con la velocidad actual
+          newState.player.velocity.x = Math.cos(newState.player.rotation) * newState.currentSpeed
+          newState.player.velocity.y = Math.sin(newState.player.rotation) * newState.currentSpeed
         } else {
           // Efecto de giro cuando está aturdido
           newState.player.rotation += 0.3
@@ -612,97 +819,7 @@ export default function PizzaDeliveryGame() {
 
         // ===== ACTUALIZAR VEHÍCULOS =====
         newState.vehicles.forEach((vehicle) => {
-          // Verificar si está cerca de una intersección
-          const currentIntersection = findNearestIntersection(vehicle.position.x, vehicle.position.y)
-          const distanceToIntersection = Math.sqrt(
-            Math.pow(vehicle.position.x - currentIntersection.x, 2) +
-              Math.pow(vehicle.position.y - currentIntersection.y, 2),
-          )
-
-          // Si está en una intersección y no es la misma que la anterior
-          if (
-            distanceToIntersection < 40 &&
-            (Math.abs(currentIntersection.x - vehicle.lastIntersection.x) > 80 ||
-              Math.abs(currentIntersection.y - vehicle.lastIntersection.y) > 80)
-          ) {
-            // Definir direcciones posibles con prioridad
-            const possibleDirections = [
-              { x: 0, y: -1, priority: 1 }, // Norte
-              { x: 0, y: 1, priority: 1 }, // Sur
-              { x: 1, y: 0, priority: 1 }, // Este
-              { x: -1, y: 0, priority: 1 }, // Oeste
-            ]
-
-            // Filtrar direcciones válidas que NO sean la opuesta a la actual
-            const currentDir = vehicle.targetDirection
-            const validDirections = possibleDirections.filter((dir) => {
-              // Evitar ir en dirección opuesta (dar vuelta en U)
-              const isOpposite = dir.x === -currentDir.x && dir.y === -currentDir.y
-              if (isOpposite) return false
-
-              // Verificar que la calle esté disponible
-              return isStreetAvailable(currentIntersection.x, currentIntersection.y, dir, newState.buildings)
-            })
-
-            if (validDirections.length > 0) {
-              // Dar prioridad a seguir recto si es posible
-              const straightDirection = validDirections.find((dir) => dir.x === currentDir.x && dir.y === currentDir.y)
-
-              if (straightDirection && Math.random() > 0.3) {
-                // 70% de probabilidad de seguir recto
-                vehicle.targetDirection = straightDirection
-              } else {
-                // Elegir dirección aleatoria de las válidas
-                const randomIndex = Math.floor(Math.random() * validDirections.length)
-                vehicle.targetDirection = validDirections[randomIndex]
-              }
-
-              vehicle.rotation = Math.atan2(vehicle.targetDirection.y, vehicle.targetDirection.x)
-              vehicle.lastIntersection = currentIntersection
-            }
-          }
-
-          // Mover en la dirección objetivo
-          vehicle.velocity.x = vehicle.targetDirection.x * vehicle.speed
-          vehicle.velocity.y = vehicle.targetDirection.y * vehicle.speed
-
-          const newVehicleX = vehicle.position.x + vehicle.velocity.x
-          const newVehicleY = vehicle.position.y + vehicle.velocity.y
-
-          // Verificar si el vehículo puede moverse a la nueva posición
-          if (isOnStreet(newVehicleX, newVehicleY, vehicle.size, newState.buildings)) {
-            vehicle.position.x = newVehicleX
-            vehicle.position.y = newVehicleY
-          } else {
-            // Si no puede moverse, buscar una nueva dirección válida inmediatamente
-            const emergencyDirections = [
-              { x: 0, y: -1 }, // Norte
-              { x: 0, y: 1 }, // Sur
-              { x: 1, y: 0 }, // Este
-              { x: -1, y: 0 }, // Oeste
-            ]
-
-            for (const dir of emergencyDirections) {
-              if (isStreetAvailable(vehicle.position.x, vehicle.position.y, dir, newState.buildings)) {
-                vehicle.targetDirection = dir
-                vehicle.rotation = Math.atan2(dir.y, dir.x)
-                break
-              }
-            }
-          }
-
-          // Mantener vehículo dentro de los límites del mundo
-          if (vehicle.position.x <= 50 || vehicle.position.x >= CITY_WIDTH - 50) {
-            vehicle.targetDirection.x *= -1
-            vehicle.rotation = Math.atan2(vehicle.targetDirection.y, vehicle.targetDirection.x)
-          }
-          if (vehicle.position.y <= 50 || vehicle.position.y >= CITY_HEIGHT - 50) {
-            vehicle.targetDirection.y *= -1
-            vehicle.rotation = Math.atan2(vehicle.targetDirection.y, vehicle.targetDirection.x)
-          }
-
-          vehicle.position.x = Math.max(50, Math.min(CITY_WIDTH - 50, vehicle.position.x))
-          vehicle.position.y = Math.max(50, Math.min(CITY_HEIGHT - 50, vehicle.position.y))
+          updateVehiclePosition(vehicle, newState.buildings, newState.vehicles)
 
           // Verificar colisión con jugador
           const dxPlayer = vehicle.position.x - newState.player.position.x
@@ -847,8 +964,7 @@ export default function PizzaDeliveryGame() {
     isOnStreet,
     checkPizzaRectCollision,
     calculatePizzaBounce,
-    findNearestIntersection,
-    isStreetAvailable,
+    updateVehiclePosition,
   ])
 
   // ===== SISTEMA DE RENDERIZADO =====
@@ -1309,7 +1425,7 @@ export default function PizzaDeliveryGame() {
 
   // ===== RENDERIZADO DEL COMPONENTE =====
   return (
-    <div className="flex flex-col items-center gap-4 p-4 bg-gray-900 min-h-screen">
+    <div className="flex flex-col items-center gap-4 p-4 bg-gray-900 min-h-screen relative">
       {/* ===== HUD PRINCIPAL ===== */}
       <div className="flex gap-6 items-center text-white bg-gray-800 px-6 py-3 rounded-lg">
         <div className="text-xl font-bold">🍕 Pizza Delivery Rush</div>
@@ -1349,50 +1465,52 @@ export default function PizzaDeliveryGame() {
 
       {/* ===== PANTALLA DE INICIO ===== */}
       {!gameState.gameStarted && (
-        <Card className="p-6 text-center max-w-lg">
-          <h2 className="text-2xl font-bold mb-4">🍕 Pizza Delivery Rush</h2>
-          <div className="text-left mb-4 space-y-2">
-            <p>
-              <strong>Objetivo:</strong> Entrega 10 pizzas en 5 minutos
-            </p>
-            <p>
-              <strong>Pizzas disponibles:</strong> 15 (puedes fallar hasta 5)
-            </p>
-            <p>
-              <strong>Controles:</strong>
-            </p>
-            <ul className="list-disc list-inside ml-4 space-y-1">
-              <li>
-                <strong>A/D:</strong> Girar izquierda/derecha
-              </li>
-              <li>
-                <strong>Mouse:</strong> Apuntar dirección de lanzamiento
-              </li>
-              <li>
-                <strong>Click y mantener:</strong> Cargar potencia
-              </li>
-              <li>
-                <strong>Soltar:</strong> Lanzar pizza
-              </li>
-              <li>
-                <strong>ESC:</strong> Pausar juego
-              </li>
-            </ul>
-            <p>
-              <strong>Reglas:</strong>
-            </p>
-            <ul className="list-disc list-inside ml-4 space-y-1">
-              <li>La moto siempre avanza hacia adelante</li>
-              <li>Evita chocar con edificios y vehículos</li>
-              <li>Las pizzas se puntúan cuando dejan de deslizarse</li>
-              <li>Las pizzas rebotan en edificios y vehículos</li>
-              <li>Más cerca del centro = más propina</li>
-            </ul>
-          </div>
-          <Button onClick={initGame} className="w-full">
-            🚀 Comenzar Entrega
-          </Button>
-        </Card>
+        <div className="fixed inset-0 flex items-center justify-center bg-gray-900 bg-opacity-80 z-50">
+          <Card className="p-6 text-center max-w-lg">
+            <h2 className="text-2xl font-bold mb-4">🍕 Pizza Delivery Rush</h2>
+            <div className="text-left mb-4 space-y-2">
+              <p>
+                <strong>Objetivo:</strong> Entrega 10 pizzas en 5 minutos
+              </p>
+              <p>
+                <strong>Pizzas disponibles:</strong> 15 (puedes fallar hasta 5)
+              </p>
+              <p>
+                <strong>Controles:</strong>
+              </p>
+              <ul className="list-disc list-inside ml-4 space-y-1">
+                <li>
+                  <strong>A/D:</strong> Girar izquierda/derecha
+                </li>
+                <li>
+                  <strong>Mouse:</strong> Apuntar dirección de lanzamiento
+                </li>
+                <li>
+                  <strong>Click y mantener:</strong> Cargar potencia
+                </li>
+                <li>
+                  <strong>Soltar:</strong> Lanzar pizza
+                </li>
+                <li>
+                  <strong>ESC:</strong> Pausar juego
+                </li>
+              </ul>
+              <p>
+                <strong>Reglas:</strong>
+              </p>
+              <ul className="list-disc list-inside ml-4 space-y-1">
+                <li>La moto siempre avanza hacia adelante</li>
+                <li>Evita chocar con edificios y vehículos</li>
+                <li>Las pizzas se puntúan cuando dejan de deslizarse</li>
+                <li>Las pizzas rebotan en edificios y vehículos</li>
+                <li>Más cerca del centro = más propina</li>
+              </ul>
+            </div>
+            <Button onClick={initGame} className="w-full">
+              🚀 Comenzar Entrega
+            </Button>
+          </Card>
+        </div>
       )}
 
       {/* ===== PANTALLA DE GAME OVER ===== */}
