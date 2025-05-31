@@ -7,6 +7,7 @@ export enum SocketEvents {
     GameState = 'gameState',
     PlayerJoined = 'playerJoined',
     PlayerLeft = 'playerLeft',
+    SetPlayerName = 'set_player_name',
     
     // Player actions
     Move = 'move',

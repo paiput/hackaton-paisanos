@@ -55,6 +55,7 @@ export class PizzaGameServer {
             socket.on(SocketEvents.GameReset, () => this.handleGameReset(socket));
             socket.on(SocketEvents.PingEvent, (startTime: number) => this.handlePing(socket, startTime));
             socket.on(SocketEvents.Disconnect, () => this.handlePlayerDisconnect(socket));
+            socket.on(SocketEvents.SetPlayerName, (name: string) => this.handleSetPlayerName(socket, name));
         });
     }
 
@@ -62,9 +63,12 @@ export class PizzaGameServer {
         // Crear nuevo jugador con posición aleatoria
         const startX = Math.random() * (CITY_WIDTH - 100) + 50;
         const startY = Math.random() * (CITY_HEIGHT - 100) + 50;
+        console.log(`Player joined: ${socket.id} at position (${startX}, ${startY})`);
+        console.log('Current players:', Object.keys(this.gameState.players));
 
         const player: NetworkPlayer = {
             id: socket.id,
+            name: `Player ${socket.id.slice(0, 4)}`,  // Default name until player sets it
             position: { x: startX, y: startY },
             velocity: { x: 0, y: 0 },
             rotation: 0,
@@ -82,6 +86,7 @@ export class PizzaGameServer {
 
         // Agregar jugador al estado del juego
         this.gameState.players[socket.id] = player;
+        console.log('Players after join:', Object.keys(this.gameState.players));
 
         // Enviar estado actual del juego al nuevo jugador
         socket.emit(SocketEvents.GameState, this.gameState);
@@ -92,7 +97,10 @@ export class PizzaGameServer {
 
     private handlePlayerUpdate(socket: Socket, data: PlayerUpdateEvent): void {
         const player = this.gameState.players[socket.id];
-        if (!player) return;
+        if (!player) {
+            console.log('Player not found for update:', socket.id);
+            return;
+        }
 
         // Actualizar estado del jugador
         player.position = data.position;
@@ -101,8 +109,17 @@ export class PizzaGameServer {
         player.isCharging = data.isCharging;
         player.chargePower = data.chargePower;
 
+        // Log the update
+        console.log(`Player ${socket.id} updated:`, {
+            position: player.position,
+            rotation: player.rotation
+        });
+
         // Broadcast actualización a otros jugadores
-        socket.broadcast.emit(SocketEvents.PlayerUpdate, data);
+        socket.broadcast.emit(SocketEvents.PlayerUpdate, {
+            ...data,
+            id: socket.id  // Ensure we're sending the correct ID
+        });
     }
 
     private handleThrowPizza(socket: Socket, data: ThrowPizzaEvent): void {
@@ -191,6 +208,25 @@ export class PizzaGameServer {
         if (Object.keys(this.gameState.players).length === 0) {
             this.handleGameReset(socket);
         }
+    }
+
+    private handleSetPlayerName(socket: Socket, name: string): void {
+        const player = this.gameState.players[socket.id];
+        if (!player) return;
+
+        // Update player name
+        player.name = name.trim() || player.name;  // Use existing name if new name is empty
+
+        // Notify all clients about the name change
+        this.io.emit(SocketEvents.PlayerUpdate, {
+            id: socket.id,
+            position: player.position,
+            rotation: player.rotation,
+            velocity: player.velocity,
+            isCharging: player.isCharging,
+            chargePower: player.chargePower,
+            name: player.name
+        });
     }
 
     private startGame(): void {

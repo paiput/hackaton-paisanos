@@ -6,9 +6,9 @@ import { NetworkGameState, NetworkPlayer, PlayerUpdateEvent, ThrowPizzaEvent, Pi
 export type GameClientCallbacks = {
     onConnect?: (playerId: string) => void;
     onDisconnect?: () => void;
-    onGameState?: (state: GameState) => void;
-    onPlayerJoined?: (player: Player) => void;
-    onPlayerMoved?: (player: Player) => void;
+    onGameState?: (state: NetworkGameState) => void;
+    onPlayerJoined?: (player: NetworkPlayer) => void;
+    onPlayerMoved?: (player: NetworkPlayer) => void;
     onPlayerShot?: (data: PlayerShotEvent) => void;
     onPlayerLeft?: (playerId: string) => void;
     onLatencyUpdate?: (latency: number) => void;
@@ -64,15 +64,15 @@ export class GameClient {
             this.callbacks.onDisconnect?.();
         });
 
-        this.socket.on(SocketEvents.GameState, (state: GameState) => {
+        this.socket.on(SocketEvents.GameState, (state: NetworkGameState) => {
             this.callbacks.onGameState?.(state);
         });
 
-        this.socket.on(SocketEvents.PlayerJoined, (player: Player) => {
+        this.socket.on(SocketEvents.PlayerJoined, (player: NetworkPlayer) => {
             this.callbacks.onPlayerJoined?.(player);
         });
 
-        this.socket.on(SocketEvents.PlayerMoved, (player: Player) => {
+        this.socket.on(SocketEvents.PlayerMoved, (player: NetworkPlayer) => {
             this.callbacks.onPlayerMoved?.(player);
         });
 
@@ -164,7 +164,11 @@ export class GameClient {
         return this.socket?.connected ?? false;
     }
 
-    public get id(): string | null {
+    public getId(): string | null {
         return this.socket?.id ?? null;
+    }
+
+    public setPlayerName(name: string): void {
+        this.socket?.emit(SocketEvents.SetPlayerName, name);
     }
 } 

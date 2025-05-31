@@ -3,6 +3,7 @@ import { Vector2, GameObject, Pizza, DeliveryPoint, Vehicle, Building, Route } f
 // Estado del jugador en red
 export interface NetworkPlayer {
     id: string;
+    name: string;
     position: Vector2;
     velocity: Vector2;
     rotation: number;
@@ -38,6 +39,7 @@ export interface PlayerUpdateEvent {
     velocity: Vector2;
     isCharging: boolean;
     chargePower: number;
+    name?: string;
 }
 
 export interface ThrowPizzaEvent {

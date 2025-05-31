@@ -3,6 +3,9 @@
 import { useEffect, useRef, useState, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
+import { SocketEvents } from "./network/events"  // Fixed import path
+import { GameClient } from "./network/GameClient"
+import { NetworkPlayer, NetworkGameState } from "./network/pizza-game-types"
 
 // ===== INTERFACES Y TIPOS =====
 // Definición de vector 2D para posiciones y velocidades
@@ -71,7 +74,9 @@ interface Building {
 
 // Estado completo del juego
 interface GameState {
-  player: GameObject
+  player: GameObject & {
+    name: string;  // Add name to player state
+  }
   pizzas: Pizza[]
   deliveryPoints: DeliveryPoint[]
   vehicles: Vehicle[]
@@ -152,12 +157,13 @@ export default function PizzaDeliveryGame() {
   const [isPaused, setIsPaused] = useState(false)
 
   // Estado inicial del juego
-  const [gameState, setGameState] = useState<GameState>({
+  const [gameState, setGameState] = useState<GameState>(() => ({
     player: {
-      position: { x: CITY_WIDTH / 2, y: CITY_HEIGHT / 2 },
+      position: { x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 },
       velocity: { x: 0, y: 0 },
       rotation: 0,
       size: { x: 20, y: 12 },
+      name: "",  // Initialize player name
     },
     pizzas: [],
     deliveryPoints: [],
@@ -189,13 +195,68 @@ export default function PizzaDeliveryGame() {
     targetMaxSpeed: PLAYER_SPEED_NORMAL,
     spinAngularSpeed: 0,
     maxSpeed: PLAYER_SPEED_NORMAL,
-  })
+  }))
 
   // Cámara que sigue al jugador con zoom
   const camera = useRef<Vector2>({ x: 0, y: 0 })
 
   // Add state to track which input method is being used
   const [aimMethod, setAimMethod] = useState<"mouse" | "space">("mouse");
+
+  const [playerName, setPlayerName] = useState<string>("");
+  const [socket, setSocket] = useState<GameClient | null>(null);
+  const [networkPlayers, setNetworkPlayers] = useState<{[id: string]: NetworkPlayer}>({});
+  
+  // Initialize socket connection
+  useEffect(() => {
+    const client = new GameClient('http://localhost:5001');  // Updated port to match server
+    client.connect({
+      onConnect: (id: string) => {
+        console.log('Connected to server with ID:', id);
+      },
+      onDisconnect: () => {
+        console.log('Disconnected from server');
+        setNetworkPlayers({});
+      },
+      onGameState: (state: NetworkGameState) => {
+        console.log('Received initial game state:', state);
+        console.log('Players in state:', Object.keys(state.players || {}));
+        setNetworkPlayers(state.players || {});
+      },
+      onPlayerJoined: (player: NetworkPlayer) => {
+        console.log('Player joined:', player);
+        setNetworkPlayers(prev => ({
+          ...prev,
+          [player.id]: player
+        }));
+      },
+      onPlayerUpdate: (data) => {
+        console.log('Player update:', data);
+        if (data.id !== client.getId()) {  // Only update other players
+          setNetworkPlayers(prev => ({
+            ...prev,
+            [data.id]: {
+              ...prev[data.id],
+              ...data
+            }
+          }));
+        }
+      },
+      onPlayerLeft: (playerId) => {
+        console.log('Player left:', playerId);
+        setNetworkPlayers(prev => {
+          const newPlayers = { ...prev };
+          delete newPlayers[playerId];
+          return newPlayers;
+        });
+      }
+    });
+    setSocket(client);
+
+    return () => {
+      client.disconnect();
+    };
+  }, []);
 
   // ===== GENERACIÓN DE CIUDAD =====
   /**
@@ -848,13 +909,31 @@ export default function PizzaDeliveryGame() {
         const newState = { ...prev };
 
         // ===== ACTUALIZAR TIMER =====
-        newState.timeLeft -= 1 / 60
+        newState.timeLeft -= 1 / 60;
+
+        // Send player update to server
+        if (socket && socket.isConnected) {
+          console.log('Sending player update:', {
+            position: newState.player.position,
+            rotation: newState.player.rotation
+          });
+          socket.updatePlayer({
+            id: socket.getId() || '',
+            position: newState.player.position,
+            rotation: newState.player.rotation,
+            velocity: newState.player.velocity,
+            isCharging: newState.isCharging,
+            chargePower: newState.chargePower,
+            name: newState.player.name
+          });
+        }
+
         if (
           newState.timeLeft <= 0 ||
           (newState.pizzasRemaining <= 0 && newState.pizzas.filter((p) => p.active).length === 0)
         ) {
-          newState.gameOver = true
-          return newState
+          newState.gameOver = true;
+          return newState;
         }
 
         // ===== ACTUALIZAR FRENADO =====
@@ -1550,6 +1629,44 @@ export default function PizzaDeliveryGame() {
       )
     }
 
+    // Draw player name
+    ctx.font = "12px Arial"
+    ctx.fillStyle = "white"
+    ctx.textAlign = "center"
+    ctx.fillText(gameState.player.name || "Player", playerScreenX, playerScreenY + 30)
+
+    // Draw other players from network
+    console.log('Rendering network players:', networkPlayers);
+    Object.values(networkPlayers).forEach(player => {
+      if (player.id !== socket?.getId()) {
+        console.log('Rendering player:', player);
+        const otherPlayerScreenX = player.position.x - camera.current.x;
+        const otherPlayerScreenY = player.position.y - camera.current.y;
+        
+        // Only render if within view bounds
+        if (
+          otherPlayerScreenX > -50 &&
+          otherPlayerScreenX < CANVAS_WIDTH / CAMERA_ZOOM + 50 &&
+          otherPlayerScreenY > -50 &&
+          otherPlayerScreenY < CANVAS_HEIGHT / CAMERA_ZOOM + 50
+        ) {
+          drawSprite(
+            ctx,
+            otherPlayerScreenX,
+            otherPlayerScreenY,
+            gameState.player.size.x,
+            gameState.player.size.y,
+            "moto",
+            0,
+            player.rotation
+          );
+          
+          // Draw other player name
+          ctx.fillText(player.name || `Player ${player.id.slice(0, 4)}`, otherPlayerScreenX, otherPlayerScreenY + 30);
+        }
+      }
+    });
+
     // ===== DIBUJAR INDICADOR DE CARGA =====
     if (gameState.isCharging && gameState.pizzasRemaining > 0) {
       let targetX: number, targetY: number;
@@ -1614,26 +1731,37 @@ export default function PizzaDeliveryGame() {
     })
 
     // Jugador en el minimapa
-    const minimapPlayerX = minimapX + (gameState.player.position.x / CITY_WIDTH) * minimapSize
-    const minimapPlayerY = minimapY + (gameState.player.position.y / CITY_HEIGHT) * minimapSize
-    ctx.fillStyle = "#339af0"
-    ctx.beginPath()
-    ctx.arc(minimapPlayerX, minimapPlayerY, 3, 0, Math.PI * 2)
-    ctx.fill()
+    const minimapPlayerX = minimapX + (gameState.player.position.x / CITY_WIDTH) * minimapSize;
+    const minimapPlayerY = minimapY + (gameState.player.position.y / CITY_HEIGHT) * minimapSize;
+    
+    // Draw player dot
+    ctx.fillStyle = "#339af0";
+    ctx.beginPath();
+    ctx.arc(minimapPlayerX, minimapPlayerY, 3, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Draw player name
+    ctx.font = "8px Arial";
+    ctx.fillStyle = "white";
+    ctx.textAlign = "center";
+    ctx.fillText(gameState.player.name || "Player", minimapPlayerX, minimapPlayerY - 5);
 
-    // Después de dibujar los edificios en el minimapa
-    const activePoint = gameState.deliveryPoints.find((p) => p.active);
-    if (activePoint) {
-      const minimapPointX = minimapX + (activePoint.position.x / CITY_WIDTH) * minimapSize;
-      const minimapPointY = minimapY + (activePoint.position.y / CITY_HEIGHT) * minimapSize;
-      ctx.fillStyle = "#ff6b6b";
-      ctx.beginPath();
-      ctx.arc(minimapPointX, minimapPointY, 5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = "#fff";
-      ctx.lineWidth = 2;
-      ctx.stroke();
-    }
+    // Draw other players
+    Object.values(networkPlayers).forEach(player => {
+      if (player.id !== socket?.getId()) {
+        const otherMinimapX = minimapX + (player.position.x / CITY_WIDTH) * minimapSize;
+        const otherMinimapY = minimapY + (player.position.y / CITY_HEIGHT) * minimapSize;
+        
+        // Draw player dot
+        ctx.fillStyle = "#ff6b6b";
+        ctx.beginPath();
+        ctx.arc(otherMinimapX, otherMinimapY, 3, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Draw player name
+        ctx.fillText(player.name || `Player ${player.id.slice(0, 4)}`, otherMinimapX, otherMinimapY - 5);
+      }
+    });
   }, [gameState, drawSprite, aimMethod])
 
   // ===== FUNCIONES AUXILIARES =====
@@ -1658,6 +1786,47 @@ export default function PizzaDeliveryGame() {
       return { title: "Tiempo agotado", message: "Se acabó el tiempo" }
     }
   }
+
+  const handleStartGame = () => {
+    if (!playerName.trim()) {
+      alert("Por favor ingresa tu nombre");
+      return;
+    }
+    // Update local player name
+    setGameState(prev => ({
+      ...prev,
+      player: {
+        ...prev.player,
+        name: playerName.trim()
+      }
+    }));
+    
+    // Send name to server
+    socket?.setPlayerName(playerName.trim());
+    
+    // Start the game
+    initGame();
+  };
+
+  // Add regular position updates
+  useEffect(() => {
+    if (!socket || !gameState.gameStarted) return;
+
+    const updateInterval = setInterval(() => {
+      socket.updatePlayer({
+        id: socket.getId() || '',
+        position: gameState.player.position,
+        rotation: gameState.player.rotation,
+        velocity: gameState.player.velocity,
+        isCharging: gameState.isCharging,
+        chargePower: gameState.chargePower,
+        name: gameState.player.name
+      });
+    }, 1000 / 30); // 30 updates per second
+
+    return () => clearInterval(updateInterval);
+  }, [socket, gameState.gameStarted, gameState.player.position, gameState.player.rotation, 
+      gameState.player.velocity, gameState.isCharging, gameState.chargePower, gameState.player.name]);
 
   // ===== RENDERIZADO DEL COMPONENTE =====
   return (
@@ -1711,47 +1880,33 @@ export default function PizzaDeliveryGame() {
       {/* ===== PANTALLA DE INICIO ===== */}
       {!gameState.gameStarted && (
         <div className="fixed inset-0 flex items-center justify-center bg-gray-900 bg-opacity-80 z-50">
-          <Card className="p-6 text-center max-w-lg">
+          <Card className="p-6 text-center max-w-md">
             <h2 className="text-2xl font-bold mb-4">🍕 Pizza Delivery Rush</h2>
-            <div className="text-left mb-4 space-y-2">
-              <p>
-                <strong>Objetivo:</strong> Entrega 10 pizzas en 5 minutos
-              </p>
-              <p>
-                <strong>Pizzas disponibles:</strong> 15 (puedes fallar hasta 5)
-              </p>
-              <p>
-                <strong>Controles:</strong>
-              </p>
-              <ul className="list-disc list-inside ml-4 space-y-1">
-                <li>
-                  <strong>A/D:</strong> Girar izquierda/derecha
-                </li>
-                <li>
-                  <strong>Mouse:</strong> Apuntar dirección de lanzamiento
-                </li>
-                <li>
-                  <strong>Click y mantener:</strong> Cargar potencia
-                </li>
-                <li>
-                  <strong>Soltar:</strong> Lanzar pizza
-                </li>
-                <li>
-                  <strong>ESC:</strong> Pausar juego
-                </li>
-              </ul>
-              <p>
-                <strong>Reglas:</strong>
-              </p>
-              <ul className="list-disc list-inside ml-4 space-y-1">
-                <li>La moto siempre avanza hacia adelante</li>
-                <li>Evita chocar con edificios y vehículos</li>
-                <li>Las pizzas se puntúan cuando dejan de deslizarse</li>
-                <li>Las pizzas rebotan en edificios y vehículos</li>
-                <li>Más cerca del centro = más propina</li>
-              </ul>
+            <div className="mb-6">
+              <h3 className="text-lg font-semibold mb-2">Ingresa tu nombre:</h3>
+              <input
+                type="text"
+                value={playerName}
+                onChange={(e) => setPlayerName(e.target.value)}
+                placeholder="Tu nombre"
+                className="w-full px-4 py-2 rounded border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 mb-4"
+                maxLength={15}
+              />
+              <div className="bg-gray-100 p-4 rounded-lg text-left">
+                <h4 className="font-semibold mb-2">Instrucciones:</h4>
+                <ul className="list-disc list-inside text-sm space-y-1">
+                  <li>Entrega {REQUIRED_DELIVERIES} pizzas antes que se acabe el tiempo</li>
+                  <li>Usa el mouse para apuntar y lanzar</li>
+                  <li>Evita los edificios y vehículos</li>
+                  <li>Más cerca del centro = más propina</li>
+                </ul>
+              </div>
             </div>
-            <Button onClick={initGame} className="w-full">
+            <Button 
+              onClick={handleStartGame} 
+              className="w-full"
+              disabled={!playerName.trim()}
+            >
               🚀 Comenzar Entrega
             </Button>
           </Card>
