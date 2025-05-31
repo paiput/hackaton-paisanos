@@ -112,8 +112,8 @@ const CANVAS_WIDTH = 1200 // Ancho del canvas
 const CANVAS_HEIGHT = 800 // Alto del canvas
 const CITY_WIDTH = 2400 // Ancho total de la ciudad
 const CITY_HEIGHT = 1600 // Alto total de la ciudad
-const PLAYER_SPEED_MIN = 0.7;
-const PLAYER_SPEED_NORMAL = 2.0;
+const PLAYER_SPEED_MIN = 0.2;
+const PLAYER_SPEED_NORMAL = 0.7;
 const PLAYER_SPEED_MAX = 3.2;
 const PLAYER_TURN_SPEED = 0.06 // Sensibilidad de giro reducida
 const PLAYER_BRAKE_SPEED = 0.8 // Velocidad durante el frenado
@@ -466,59 +466,99 @@ export default function PizzaDeliveryGame() {
   const generateVehicleRoute = useCallback(
     (startPos: Vector2, buildings: Building[]): Route => {
       const points: Vector2[] = []
-      const numPoints = 4 // Número fijo de puntos para la ruta
-
-      // Encontrar la intersección más cercana para alinear el vehículo
+      const numPoints = 12 // Aumentado significativamente para rutas más largas
+      
+      // Encontrar la intersección más cercana para el punto inicial
       const startIntersection = findNearestIntersection(startPos.x, startPos.y)
-      points.push(startIntersection)
+      points.push({ ...startIntersection })
 
-      // Generar puntos adicionales en líneas rectas
+      // Inicializar dirección actual (horizontal o vertical)
       let currentPos = { ...startIntersection }
-      let currentDirection = Math.random() < 0.5 ? { x: 1, y: 0 } : { x: 0, y: 1 } // Comenzar horizontal o vertical
+      let currentDirection = Math.random() < 0.5 ? { x: 1, y: 0 } : { x: 0, y: 1 }
+      let straightCount = 0 // Contador de tramos rectos
 
       for (let i = 1; i < numPoints; i++) {
-        // Decidir si girar o seguir recto
-        const shouldTurn = Math.random() < 0.3 // 30% de probabilidad de girar
+        // Probabilidad de girar aumenta con cada tramo recto
+        const shouldTurn = Math.random() < (0.3 + straightCount * 0.1) // Máximo 80% después de 5 tramos rectos
 
         if (shouldTurn) {
-          // Girar 90 grados
+          straightCount = 0 // Resetear contador al girar
+          // Girar 90 grados (cambiar de horizontal a vertical o viceversa)
+          currentDirection = {
+            x: currentDirection.y,
+            y: currentDirection.x,
+          }
+          // Elegir dirección aleatoria en el nuevo eje
           if (currentDirection.x !== 0) {
-            // Si va horizontal, girar vertical
-            currentDirection = { x: 0, y: Math.random() < 0.5 ? 1 : -1 }
+            currentDirection.x *= Math.random() < 0.5 ? 1 : -1
           } else {
-            // Si va vertical, girar horizontal
-            currentDirection = { x: Math.random() < 0.5 ? 1 : -1, y: 0 }
+            currentDirection.y *= Math.random() < 0.5 ? 1 : -1
+          }
+        } else {
+          straightCount++ // Incrementar contador de tramos rectos
+        }
+
+        // Calcular varios puntos intermedios en la misma dirección
+        const numIntermediatePoints = Math.floor(Math.random() * 2) + 1 // 1 o 2 puntos intermedios
+        
+        for (let j = 0; j < numIntermediatePoints && i < numPoints; j++, i++) {
+          const nextPos = {
+            x: currentPos.x + currentDirection.x * BLOCK_SIZE,
+            y: currentPos.y + currentDirection.y * BLOCK_SIZE,
+          }
+
+          // Verificar límites y validez del punto
+          if (
+            nextPos.x >= STREET_WIDTH &&
+            nextPos.x <= CITY_WIDTH - STREET_WIDTH &&
+            nextPos.y >= STREET_WIDTH &&
+            nextPos.y <= CITY_HEIGHT - STREET_WIDTH &&
+            isOnStreet(nextPos.x, nextPos.y, { x: 40, y: 40 }, buildings)
+          ) {
+            points.push({ ...nextPos })
+            currentPos = { ...nextPos }
+          } else {
+            // Si el punto no es válido, invertir dirección y terminar el tramo actual
+            currentDirection.x *= -1
+            currentDirection.y *= -1
+            break
           }
         }
+      }
 
-        // Calcular siguiente punto
-        const nextPos = {
-          x: currentPos.x + currentDirection.x * BLOCK_SIZE,
-          y: currentPos.y + currentDirection.y * BLOCK_SIZE,
+      // Asegurar que la ruta tenga al menos 3 puntos
+      while (points.length < 3) {
+        const lastPoint = points[points.length - 1]
+        const newPoint = {
+          x: lastPoint.x + BLOCK_SIZE * (Math.random() < 0.5 ? 1 : -1),
+          y: lastPoint.y + BLOCK_SIZE * (Math.random() < 0.5 ? 1 : -1),
         }
-
-        // Verificar que el punto esté dentro de los límites y en una calle
+        
         if (
-          nextPos.x >= 0 &&
-          nextPos.x < CITY_WIDTH &&
-          nextPos.y >= 0 &&
-          nextPos.y < CITY_HEIGHT &&
-          isOnStreet(nextPos.x, nextPos.y, { x: 40, y: 40 }, buildings)
+          newPoint.x >= STREET_WIDTH &&
+          newPoint.x <= CITY_WIDTH - STREET_WIDTH &&
+          newPoint.y >= STREET_WIDTH &&
+          newPoint.y <= CITY_HEIGHT - STREET_WIDTH &&
+          isOnStreet(newPoint.x, newPoint.y, { x: 40, y: 40 }, buildings)
         ) {
-          points.push(nextPos)
-          currentPos = nextPos
-        } else {
-          // Si el punto no es válido, invertir dirección
-          currentDirection = { x: -currentDirection.x, y: -currentDirection.y }
-          i-- // Intentar de nuevo con la nueva dirección
+          points.push(newPoint)
         }
       }
+
+      // Decidir si la ruta es circular basado en la distancia entre el primer y último punto
+      const firstPoint = points[0]
+      const lastPoint = points[points.length - 1]
+      const endDistance = Math.sqrt(
+        Math.pow(lastPoint.x - firstPoint.x, 2) + Math.pow(lastPoint.y - firstPoint.y, 2)
+      )
+      
+      const isLooping = endDistance <= BLOCK_SIZE * 3 // Si los extremos están cerca, hacer la ruta circular
 
       return {
         points,
         type: "linear",
         currentPointIndex: 0,
-        isLooping: true,
+        isLooping,
       }
     },
     [isOnStreet, findNearestIntersection],
@@ -540,26 +580,39 @@ export default function PizzaDeliveryGame() {
       // Si llegamos al punto actual, avanzar al siguiente
       if (distance < ROUTE_POINT_RADIUS) {
         route.currentPointIndex = (route.currentPointIndex + 1) % route.points.length
+        if (route.currentPointIndex === 0 && !route.isLooping) {
+          // Invertir la ruta si no es circular
+          route.points.reverse()
+        }
       }
 
       // Calcular dirección hacia el siguiente punto
       const targetPoint = route.points[route.currentPointIndex]
       const targetDx = targetPoint.x - vehicle.position.x
       const targetDy = targetPoint.y - vehicle.position.y
+      const targetDistance = Math.sqrt(targetDx * targetDx + targetDy * targetDy)
 
-      // Determinar si el movimiento es horizontal o vertical
-      const isHorizontal = Math.abs(targetDx) > Math.abs(targetDy)
+      // Normalizar la dirección objetivo
       const targetDirection = {
-        x: isHorizontal ? Math.sign(targetDx) : 0,
-        y: isHorizontal ? 0 : Math.sign(targetDy),
+        x: targetDistance > 0 ? targetDx / targetDistance : 0,
+        y: targetDistance > 0 ? targetDy / targetDistance : 0,
       }
 
-      // Actualizar dirección y rotación
-      vehicle.targetDirection = targetDirection
-      vehicle.rotation = Math.atan2(targetDirection.y, targetDirection.x)
+      // Actualizar rotación suavemente
+      const targetRotation = Math.atan2(targetDirection.y, targetDirection.x)
+      let rotationDiff = targetRotation - vehicle.rotation
+      
+      // Normalizar la diferencia de rotación al rango [-PI, PI]
+      while (rotationDiff > Math.PI) rotationDiff -= 2 * Math.PI
+      while (rotationDiff < -Math.PI) rotationDiff += 2 * Math.PI
+      
+      // Aplicar rotación suave
+      vehicle.rotation += rotationDiff * 0.1
 
       // Verificar colisiones con otros vehículos
-      let shouldSlowDown = false
+      let minDistance = Infinity
+      let nearestVehicle: Vehicle | null = null
+
       for (const otherVehicle of vehicles) {
         if (otherVehicle === vehicle) continue
 
@@ -567,33 +620,51 @@ export default function PizzaDeliveryGame() {
         const dy = otherVehicle.position.y - vehicle.position.y
         const distance = Math.sqrt(dx * dx + dy * dy)
 
-        if (distance < MIN_VEHICLE_DISTANCE) {
-          shouldSlowDown = true
-          break
+        if (distance < minDistance) {
+          minDistance = distance
+          nearestVehicle = otherVehicle
         }
       }
 
-      // Aplicar velocidad
-      const speed = shouldSlowDown ? vehicle.speed * 0.5 : vehicle.speed
-      vehicle.velocity.x = vehicle.targetDirection.x * speed
-      vehicle.velocity.y = vehicle.targetDirection.y * speed
+      // Ajustar velocidad basada en la distancia al vehículo más cercano
+      let speedMultiplier = 1.0
+      if (nearestVehicle && minDistance < MIN_VEHICLE_DISTANCE * 2) {
+        // Calcular ángulo entre vehículos
+        const angleToNearest = Math.atan2(
+          nearestVehicle.position.y - vehicle.position.y,
+          nearestVehicle.position.x - vehicle.position.x
+        )
+        const angleDiff = Math.abs(angleToNearest - vehicle.rotation)
+        
+        // Reducir velocidad solo si el vehículo está adelante (en un cono de ~60 grados)
+        if (angleDiff < Math.PI / 3) {
+          speedMultiplier = Math.max(0.1, (minDistance - MIN_VEHICLE_DISTANCE) / MIN_VEHICLE_DISTANCE)
+        }
+      }
+
+      // Aplicar velocidad con el multiplicador
+      const finalSpeed = vehicle.speed * speedMultiplier
+      vehicle.velocity.x = Math.cos(vehicle.rotation) * finalSpeed
+      vehicle.velocity.y = Math.sin(vehicle.rotation) * finalSpeed
 
       // Actualizar posición
       const newX = vehicle.position.x + vehicle.velocity.x
       const newY = vehicle.position.y + vehicle.velocity.y
 
-      // Verificar colisiones con edificios
-      if (isOnStreet(newX, newY, vehicle.size, buildings)) {
+      // Verificar que la nueva posición sea válida
+      if (
+        newX >= STREET_WIDTH &&
+        newX <= CITY_WIDTH - STREET_WIDTH &&
+        newY >= STREET_WIDTH &&
+        newY <= CITY_HEIGHT - STREET_WIDTH &&
+        isOnStreet(newX, newY, vehicle.size, buildings)
+      ) {
         vehicle.position.x = newX
         vehicle.position.y = newY
       } else {
-        // Si hay colisión, buscar una nueva ruta
+        // Si hay colisión, regenerar ruta
         vehicle.route = generateVehicleRoute(vehicle.position, buildings)
       }
-
-      // Mantener vehículo dentro de los límites
-      vehicle.position.x = Math.max(50, Math.min(CITY_WIDTH - 50, vehicle.position.x))
-      vehicle.position.y = Math.max(50, Math.min(CITY_HEIGHT - 50, vehicle.position.y))
     },
     [isOnStreet, generateVehicleRoute],
   )
