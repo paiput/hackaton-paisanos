@@ -1028,35 +1028,45 @@ export default function PizzaDeliveryGame() {
               const dx = pizza.position.x - currentPoint.position.x
               const dy = pizza.position.y - currentPoint.position.y
               const distance = Math.sqrt(dx * dx + dy * dy)
+              const PIZZA_RADIUS = 8 // Radio de la pizza
 
-              if (distance <= currentPoint.radius) {
+              // Considerar el radio de la pizza para la detección
+              if (distance <= currentPoint.radius + PIZZA_RADIUS) {
                 // ===== ENTREGA EXITOSA =====
                 pizza.delivered = true
                 pizza.active = false
 
-                // Calcular puntos basados en precisión
-                const accuracy = 1 - distance / currentPoint.radius
+                // Calcular puntos basados en precisión (ajustado para considerar el radio de la pizza)
+                const effectiveDistance = Math.max(0, distance - PIZZA_RADIUS)
+                const accuracy = 1 - effectiveDistance / currentPoint.radius
                 const points = Math.floor(accuracy * 150) + 50 // 50-200 puntos
                 newState.score += points
 
-                // Actualizar contador de entregas (asegurar que sea un número)
-                newState.deliveriesCompleted = (newState.deliveriesCompleted || 0) + 1
+                // Actualizar contador de entregas de forma segura
+                newState.deliveriesCompleted = Number(newState.deliveriesCompleted || 0) + 1
 
-                // Desactivar el punto actual
+                // Desactivar el punto actual y activar el siguiente
                 currentPoint.active = false
 
-                // Avanzar a la siguiente entrega
-                newState.currentDelivery++
-
-                // Activar el siguiente punto de entrega si existe
-                if (newState.currentDelivery < newState.deliveryPoints.length) {
+                // Avanzar a la siguiente entrega si hay más puntos disponibles
+                if (newState.currentDelivery < newState.deliveryPoints.length - 1) {
+                  newState.currentDelivery++
                   newState.deliveryPoints[newState.currentDelivery].active = true
                 }
+
+                console.log('Pizza entregada exitosamente:', {
+                  deliveriesCompleted: newState.deliveriesCompleted,
+                  currentDelivery: newState.currentDelivery,
+                  points,
+                  accuracy
+                })
 
                 return false
               }
             }
-            // Si no está en el punto de entrega o el punto no está activo
+            // Pizza falló la entrega
+            console.log('Pizza falló la entrega')
+            pizza.delivered = false
             pizza.active = false
             return false
           }
@@ -1068,7 +1078,9 @@ export default function PizzaDeliveryGame() {
             pizza.position.y < 0 ||
             pizza.position.y > CITY_HEIGHT
           ) {
+            console.log('Pizza fuera de límites')
             pizza.active = false
+            pizza.delivered = false
             if (pizza.sliding) {
               newState.score = Math.max(0, newState.score - 30) // Penalización por salir del mapa
             }
