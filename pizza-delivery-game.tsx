@@ -144,7 +144,7 @@ const ROUTE_POINT_RADIUS = 30 // Radio para considerar que se alcanzó un punto
 export default function PizzaDeliveryGame() {
   // ===== REFS Y ESTADO =====
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const gameLoopRef = useRef<number>()
+  const gameLoopRef = useRef<number | null>(null)
   const keysRef = useRef<Set<string>>(new Set())
   const mouseRef = useRef<{ x: number; y: number; down: boolean }>({ x: 0, y: 0, down: false })
 
@@ -1008,12 +1008,12 @@ export default function PizzaDeliveryGame() {
 
             // ===== CALCULAR PUNTUACIÓN FINAL =====
             const currentPoint = newState.deliveryPoints[newState.currentDelivery]
-            if (currentPoint && currentPoint.active) {
+            if (currentPoint) {
               const dx = pizza.position.x - currentPoint.position.x
               const dy = pizza.position.y - currentPoint.position.y
               const distance = Math.sqrt(dx * dx + dy * dy)
 
-              if (distance < currentPoint.radius) {
+              if (distance <= currentPoint.radius) {
                 // ===== ENTREGA EXITOSA =====
                 pizza.delivered = true
                 pizza.active = false
@@ -1045,7 +1045,7 @@ export default function PizzaDeliveryGame() {
                 return false
               }
             } else {
-              // No hay punto de entrega activo
+              // No hay punto de entrega válido
               pizza.active = false
               return false
             }
@@ -1555,9 +1555,9 @@ export default function PizzaDeliveryGame() {
 
   // ===== RENDERIZADO DEL COMPONENTE =====
   return (
-    <div className="flex flex-col items-center gap-4 p-4 bg-gray-900 min-h-screen relative">
+    <div className="flex flex-col items-center bg-gray-900 h-screen p-2 relative">
       {/* ===== HUD PRINCIPAL ===== */}
-      <div className="flex gap-6 items-center text-white bg-gray-800 px-6 py-3 rounded-lg">
+      <div className="flex gap-6 items-center text-white bg-gray-800 px-6 py-2 rounded-lg mb-2">
         <div className="text-xl font-bold">🍕 Pizza Delivery Rush</div>
         {gameState.gameStarted && (
           <>
@@ -1592,13 +1592,15 @@ export default function PizzaDeliveryGame() {
       </div>
 
       {/* ===== CANVAS DEL JUEGO ===== */}
-      <canvas
-        ref={canvasRef}
-        width={CANVAS_WIDTH}
-        height={CANVAS_HEIGHT}
-        className="border-2 border-gray-600 bg-gray-700"
-        style={{ imageRendering: "pixelated" }}
-      />
+      <div className="flex-1 flex items-center justify-center min-h-0">
+        <canvas
+          ref={canvasRef}
+          width={CANVAS_WIDTH}
+          height={CANVAS_HEIGHT}
+          className="border-2 border-gray-600 bg-gray-700 max-h-[calc(100vh-8rem)]"
+          style={{ imageRendering: "pixelated", aspectRatio: `${CANVAS_WIDTH}/${CANVAS_HEIGHT}` }}
+        />
+      </div>
 
       {/* ===== PANTALLA DE INICIO ===== */}
       {!gameState.gameStarted && (
@@ -1652,37 +1654,39 @@ export default function PizzaDeliveryGame() {
 
       {/* ===== PANTALLA DE GAME OVER ===== */}
       {gameState.gameOver && (
-        <Card className="p-6 text-center max-w-md">
-          <h2 className="text-2xl font-bold mb-4">{getGameResult().title}</h2>
-          <p className="mb-4">{getGameResult().message}</p>
-          <div className="bg-gray-100 p-4 rounded-lg mb-4">
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div>
-                <div className="font-semibold">Puntuación Final</div>
-                <div className="text-2xl font-bold text-blue-600">{gameState.score}</div>
-              </div>
-              <div>
-                <div className="font-semibold">Entregas</div>
-                <div className="text-2xl font-bold text-green-600">
-                  {gameState.deliveriesCompleted}/{REQUIRED_DELIVERIES}
+        <div className="fixed top-0 left-0 w-full h-full flex items-center justify-center bg-gray-900 bg-opacity-80 z-50">
+          <Card className="p-6 text-center max-w-md">
+            <h2 className="text-2xl font-bold mb-4">{getGameResult().title}</h2>
+            <p className="mb-4">{getGameResult().message}</p>
+            <div className="bg-gray-100 p-4 rounded-lg mb-4">
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <div className="font-semibold">Puntuación Final</div>
+                  <div className="text-2xl font-bold text-blue-600">{gameState.score}</div>
                 </div>
-              </div>
-              <div>
-                <div className="font-semibold">Pizzas Usadas</div>
-                <div className="text-lg">
-                  {TOTAL_PIZZAS - gameState.pizzasRemaining}/{TOTAL_PIZZAS}
+                <div>
+                  <div className="font-semibold">Entregas</div>
+                  <div className="text-2xl font-bold text-green-600">
+                    {gameState.deliveriesCompleted}/{REQUIRED_DELIVERIES}
+                  </div>
                 </div>
-              </div>
-              <div>
-                <div className="font-semibold">Tiempo Restante</div>
-                <div className="text-lg">{formatTime(gameState.timeLeft)}</div>
+                <div>
+                  <div className="font-semibold">Pizzas Usadas</div>
+                  <div className="text-lg">
+                    {TOTAL_PIZZAS - gameState.pizzasRemaining}/{TOTAL_PIZZAS}
+                  </div>
+                </div>
+                <div>
+                  <div className="font-semibold">Tiempo Restante</div>
+                  <div className="text-lg">{formatTime(gameState.timeLeft)}</div>
+                </div>
               </div>
             </div>
-          </div>
-          <Button onClick={initGame} className="w-full">
-            🔄 Jugar de Nuevo
-          </Button>
-        </Card>
+            <Button onClick={initGame} className="w-full">
+              🔄 Jugar de Nuevo
+            </Button>
+          </Card>
+        </div>
       )}
 
       {/* ===== PANTALLA DE PAUSA ===== */}
@@ -1725,7 +1729,7 @@ export default function PizzaDeliveryGame() {
       )}
 
       {/* ===== CONSEJOS ===== */}
-      <div className="text-sm text-gray-400 text-center max-w-3xl">
+      <div className="text-sm text-gray-400 text-center max-w-3xl mt-2">
         <p>
           <strong>💡 Consejos:</strong> Mantén la velocidad constante • Planifica tu ruta • Usa el minimapa • ¡La
           precisión es clave para las propinas! • Presiona ESC para pausar
