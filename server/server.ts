@@ -112,7 +112,7 @@ io.on('connection', (socket: Socket) => {
     });
 });
 
-const PORT = Number(process.env.SOCKET_PORT) || 5000;
+const PORT = Number(process.env.SOCKET_PORT) || 5001;
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`Socket.IO server listening on port ${PORT}`);
 });
