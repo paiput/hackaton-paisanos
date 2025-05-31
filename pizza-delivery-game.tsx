@@ -107,6 +107,7 @@ interface GameState {
   targetMaxSpeed: number
   spinAngularSpeed: number; // velocidad angular actual
   maxSpeed: number // velocidad máxima alcanzable actual
+  leaderboard: { [playerId: string]: { name: string; score: number } } // Add leaderboard
 }
 
 // ===== CONSTANTES DEL JUEGO =====
@@ -195,6 +196,7 @@ export default function PizzaDeliveryGame() {
     targetMaxSpeed: PLAYER_SPEED_NORMAL,
     spinAngularSpeed: 0,
     maxSpeed: PLAYER_SPEED_NORMAL,
+    leaderboard: {},
   }))
 
   // Cámara que sigue al jugador con zoom
@@ -209,7 +211,7 @@ export default function PizzaDeliveryGame() {
   
   // Initialize socket connection
   useEffect(() => {
-    const client = new GameClient('http://localhost:5001');  // Updated port to match server
+    const client = new GameClient(process.env.NEXT_PUBLIC_SOCKET_SERVER_URL!);  // Updated port to match server
     client.connect({
       onConnect: (id: string) => {
         console.log('Connected to server with ID:', id);
@@ -228,6 +230,17 @@ export default function PizzaDeliveryGame() {
         setNetworkPlayers(prev => ({
           ...prev,
           [player.id]: player
+        }));
+        // Add player to leaderboard with 0 score
+        setGameState(prev => ({
+          ...prev,
+          leaderboard: {
+            ...prev.leaderboard,
+            [player.id]: {
+              name: player.name,
+              score: 0
+            }
+          }
         }));
       },
       onPlayerUpdate: (data) => {
@@ -249,6 +262,27 @@ export default function PizzaDeliveryGame() {
           delete newPlayers[playerId];
           return newPlayers;
         });
+        // Remove player from leaderboard
+        setGameState(prev => {
+          const newLeaderboard = { ...prev.leaderboard };
+          delete newLeaderboard[playerId];
+          return { ...prev, leaderboard: newLeaderboard };
+        });
+      },
+      onDeliveryComplete: (playerId: string, points: number) => {
+        console.log('Delivery complete:', { playerId, points });
+        if (playerId !== client.getId()) {  // Only update other players' scores
+          setGameState(prev => ({
+            ...prev,
+            leaderboard: {
+              ...prev.leaderboard,
+              [playerId]: {
+                name: networkPlayers[playerId]?.name || `Player ${playerId.slice(0, 4)}`,
+                score: (prev.leaderboard[playerId]?.score || 0) + points
+              }
+            }
+          }));
+        }
       }
     });
     setSocket(client);
@@ -1201,6 +1235,21 @@ export default function PizzaDeliveryGame() {
                 const accuracy = 1 - effectiveDistance / currentPoint.radius
                 const points = Math.floor(accuracy * 150) + 50 // 50-200 puntos
                 newState.score += points
+                
+                // Devolver una pizza por entrega exitosa
+                newState.pizzasRemaining = Math.min(TOTAL_PIZZAS, newState.pizzasRemaining + 1)
+
+                // Actualizar leaderboard
+                if (socket) {
+                  const playerId = socket.getId() || '';
+                  newState.leaderboard = {
+                    ...newState.leaderboard,
+                    [playerId]: {
+                      name: newState.player.name,
+                      score: newState.score
+                    }
+                  };
+                }
 
                 // Actualizar contador de entregas de forma segura
                 newState.deliveriesCompleted = Number(newState.deliveriesCompleted || 0) + 1
@@ -1218,7 +1267,8 @@ export default function PizzaDeliveryGame() {
                   deliveriesCompleted: newState.deliveriesCompleted,
                   currentDelivery: newState.currentDelivery,
                   points,
-                  accuracy
+                  accuracy,
+                  pizzasRemaining: newState.pizzasRemaining
                 })
 
                 return false
@@ -1761,6 +1811,61 @@ export default function PizzaDeliveryGame() {
         // Draw player name
         ctx.fillText(player.name || `Player ${player.id.slice(0, 4)}`, otherMinimapX, otherMinimapY - 5);
       }
+    });
+
+    // Draw leaderboard
+    const leaderboardX = minimapX;
+    const leaderboardY = minimapY + minimapSize + 20;
+    const leaderboardWidth = minimapSize;
+    const leaderboardHeight = 120;
+
+    // Leaderboard background
+    ctx.fillStyle = "rgba(0, 0, 0, 0.8)";
+    ctx.fillRect(leaderboardX, leaderboardY, leaderboardWidth, leaderboardHeight);
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(leaderboardX, leaderboardY, leaderboardWidth, leaderboardHeight);
+
+    // Leaderboard title
+    ctx.font = "14px Arial";
+    ctx.fillStyle = "#fff";
+    ctx.textAlign = "center";
+    ctx.fillText("🏆 Leaderboard", leaderboardX + leaderboardWidth / 2, leaderboardY + 20);
+
+    // Sort players by score
+    const sortedPlayers = Object.entries(gameState.leaderboard)
+      .sort(([, a], [, b]) => b.score - a.score)
+      .slice(0, 5); // Show top 5 players
+
+    // Draw player scores
+    ctx.font = "12px Arial";
+    ctx.textAlign = "left";
+    sortedPlayers.forEach(([playerId, data], index) => {
+      const isCurrentPlayer = socket && playerId === socket.getId();
+      const y = leaderboardY + 40 + index * 20;
+      
+      // Highlight current player
+      if (isCurrentPlayer) {
+        ctx.fillStyle = "rgba(51, 154, 240, 0.3)";
+        ctx.fillRect(leaderboardX + 5, y - 12, leaderboardWidth - 10, 16);
+      }
+      
+      // Draw rank and name
+      ctx.fillStyle = isCurrentPlayer ? "#339af0" : "#fff";
+      ctx.fillText(
+        `${index + 1}. ${data.name.slice(0, 10)}${data.name.length > 10 ? "..." : ""}`,
+        leaderboardX + 10,
+        y
+      );
+      
+      // Draw score
+      ctx.textAlign = "right";
+      ctx.fillText(
+        data.score.toString(),
+        leaderboardX + leaderboardWidth - 10,
+        y
+      );
+      ctx.textAlign = "left";
     });
   }, [gameState, drawSprite, aimMethod])
 
