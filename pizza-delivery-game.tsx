@@ -3,6 +3,9 @@
 import { useEffect, useRef, useState, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
+import { GameClient } from '@/network/GameClient';
+import { NetworkPlayer, NetworkGameState, PlayerUpdateEvent, ThrowPizzaEvent } from '@/network/pizza-game-types';
+import { SocketEvents } from '@/network/events';
 
 // ===== INTERFACES Y TIPOS =====
 // Definición de vector 2D para posiciones y velocidades
@@ -193,6 +196,116 @@ export default function PizzaDeliveryGame() {
 
   // Cámara que sigue al jugador con zoom
   const camera = useRef<Vector2>({ x: 0, y: 0 })
+
+  // Agregar estado de red
+  const [isConnected, setIsConnected] = useState(false);
+  const [playerId, setPlayerId] = useState<string | null>(null);
+  const [otherPlayers, setOtherPlayers] = useState<{ [id: string]: NetworkPlayer }>({});
+  const [latency, setLatency] = useState<number>(0);
+  const gameClientRef = useRef<GameClient | null>(null);
+
+  // Inicializar cliente de red
+  useEffect(() => {
+    const client = new GameClient(process.env.NEXT_PUBLIC_SOCKET_SERVER_URL!); // Ajusta la URL según tu servidor
+
+    client.connect({
+      onConnect: (id) => {
+        console.log('Connected with ID:', id);
+        setPlayerId(id);
+        setIsConnected(true);
+      },
+      onDisconnect: () => {
+        console.log('Disconnected from server');
+        setIsConnected(false);
+        setPlayerId(null);
+      },
+      onLatencyUpdate: (lat) => setLatency(lat),
+      onGameStart: (data) => {
+        setGameState(prev => ({
+          ...prev,
+          buildings: data.buildings,
+          deliveryPoints: data.deliveryPoints,
+          vehicles: data.vehicles,
+          timeLeft: data.timeLeft,
+          gameStarted: true,
+          gameOver: false
+        }));
+      },
+      onGameOver: (data) => {
+        setGameState(prev => ({
+          ...prev,
+          gameOver: true,
+          score: data.scores[playerId!] || 0
+        }));
+      },
+      onPlayerUpdate: (data) => {
+        if (data.id !== playerId) {
+          setOtherPlayers(prev => ({
+            ...prev,
+            [data.id]: {
+              ...prev[data.id],
+              position: data.position,
+              rotation: data.rotation,
+              velocity: data.velocity,
+              isCharging: data.isCharging,
+              chargePower: data.chargePower
+            }
+          }));
+        }
+      },
+      onPizzaThrown: (data) => {
+        if (data.playerId !== playerId) {
+          setGameState(prev => ({
+            ...prev,
+            pizzas: [...prev.pizzas, {
+              position: data.position,
+              velocity: data.velocity,
+              active: true,
+              delivered: false,
+              sliding: true
+            }]
+          }));
+        }
+      },
+      onPizzaUpdate: (data) => {
+        setGameState(prev => ({
+          ...prev,
+          pizzas: data.pizzas
+        }));
+      },
+      onVehicleUpdate: (data) => {
+        setGameState(prev => ({
+          ...prev,
+          vehicles: data.vehicles
+        }));
+      },
+      onPlayerCollision: (data) => {
+        if (data.playerId === playerId) {
+          setGameState(prev => ({
+            ...prev,
+            stunned: STUN_DURATION,
+            isCharging: false,
+            chargePower: 0
+          }));
+        }
+      },
+      onDeliveryComplete: (id, points) => {
+        if (id === playerId) {
+          setGameState(prev => ({
+            ...prev,
+            score: prev.score + points,
+            deliveriesCompleted: prev.deliveriesCompleted + 1
+          }));
+        }
+      }
+    });
+
+    gameClientRef.current = client;
+
+    return () => {
+      client.disconnect();
+    };
+  }, []);
 
   // ===== GENERACIÓN DE CIUDAD =====
   /**
@@ -534,59 +647,13 @@ export default function PizzaDeliveryGame() {
    * Inicializa un nuevo juego generando la ciudad y colocando elementos
    */
   const initGame = useCallback(() => {
-    const buildings = generateCity()
-    const deliveryPoints = generateDeliveryPoints(buildings)
-    const vehicles = generateVehicles(buildings)
-
-    // Encontrar una posición inicial válida para el jugador
-    let startX = CITY_WIDTH / 2
-    let startY = CITY_HEIGHT / 2
-    let attempts = 0
-    while (!isOnStreet(startX, startY, { x: 20, y: 12 }, buildings) && attempts < 100) {
-      startX = Math.random() * CITY_WIDTH
-      startY = Math.random() * CITY_HEIGHT
-      attempts++
+    if (!isConnected) {
+      console.warn('Not connected to server');
+      return;
     }
 
-    setGameState((prev) => ({
-      ...prev,
-      player: {
-        position: { x: startX, y: startY },
-        velocity: { x: 0, y: 0 },
-        rotation: 0,
-        size: { x: 20, y: 12 },
-      },
-      pizzas: [],
-      deliveryPoints,
-      vehicles,
-      buildings,
-      currentDelivery: 0,
-      score: 0,
-      timeLeft: GAME_DURATION,
-      gameStarted: true,
-      gameOver: false,
-      isCharging: false,
-      chargePower: 0,
-      stunned: 0,
-      pizzasRemaining: TOTAL_PIZZAS,
-      deliveriesCompleted: 0,
-      playerPreviousRotation: 0,
-      isBraking: false,
-      brakeCooldown: 0,
-      currentSpeed: PLAYER_SPEED_NORMAL,
-      isTurning: false,
-      turnFrictionTimer: 0,
-      collisionRecoveryTimer: 0,
-      speedLevel: "normal",
-      targetSpeed: PLAYER_SPEED_NORMAL,
-      spinTimer: 0,
-      spinCount: 0,
-      targetMaxSpeed: PLAYER_SPEED_NORMAL,
-      spinAngularSpeed: 0,
-      maxSpeed: PLAYER_SPEED_NORMAL,
-    }))
-    setIsPaused(false)
-  }, [generateCity, generateDeliveryPoints, generateVehicles, isOnStreet])
+    gameClientRef.current?.readyToStart();
+  }, [isConnected]);
 
   // ===== MANEJO DE INPUT =====
   /**
@@ -651,25 +718,21 @@ export default function PizzaDeliveryGame() {
 
     const handleMouseUp = (e: MouseEvent) => {
       if (e.button === 0 && !isPaused) {
-        // Soltar click izquierdo
-        mouseRef.current.down = false
+        mouseRef.current.down = false;
         setGameState((prev) => {
-          // Solo lanzar si está cargando, no está aturdido y tiene pizzas
           if (prev.isCharging && prev.stunned <= 0 && prev.pizzasRemaining > 0) {
-            // Calcular dirección del lanzamiento (ajustado para el zoom)
-            const worldMouseX = (mouseRef.current.x - CANVAS_WIDTH / 2) / CAMERA_ZOOM + prev.player.position.x
-            const worldMouseY = (mouseRef.current.y - CANVAS_HEIGHT / 2) / CAMERA_ZOOM + prev.player.position.y
+            const worldMouseX = (mouseRef.current.x - CANVAS_WIDTH / 2) / CAMERA_ZOOM + prev.player.position.x;
+            const worldMouseY = (mouseRef.current.y - CANVAS_HEIGHT / 2) / CAMERA_ZOOM + prev.player.position.y;
 
-            const dx = worldMouseX - prev.player.position.x
-            const dy = worldMouseY - prev.player.position.y
-            const distance = Math.sqrt(dx * dx + dy * dy)
+            const dx = worldMouseX - prev.player.position.x;
+            const dy = worldMouseY - prev.player.position.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
 
             if (distance > 0) {
-              const normalizedX = dx / distance
-              const normalizedY = dy / distance
-              const power = prev.chargePower
+              const normalizedX = dx / distance;
+              const normalizedY = dy / distance;
+              const power = prev.chargePower;
 
-              // Crear nueva pizza
               const newPizza: Pizza = {
                 position: { ...prev.player.position },
                 velocity: {
@@ -679,6 +742,15 @@ export default function PizzaDeliveryGame() {
                 active: true,
                 delivered: false,
                 sliding: true,
+              };
+
+              // Enviar evento de lanzamiento de pizza
+              if (gameClientRef.current && playerId) {
+                gameClientRef.current.throwPizza({
+                  playerId,
+                  position: newPizza.position,
+                  velocity: newPizza.velocity
+                });
               }
 
               return {
@@ -687,11 +759,11 @@ export default function PizzaDeliveryGame() {
                 isCharging: false,
                 chargePower: 0,
                 pizzasRemaining: prev.pizzasRemaining - 1,
-              }
+              };
             }
           }
-          return { ...prev, isCharging: false, chargePower: 0 }
-        })
+          return { ...prev, isCharging: false, chargePower: 0 };
+        });
       }
     }
 
@@ -710,7 +782,7 @@ export default function PizzaDeliveryGame() {
       window.removeEventListener("mousedown", handleMouseDown)
       window.removeEventListener("mouseup", handleMouseUp)
     }
-  }, [gameState.gameStarted, gameState.gameOver, isPaused])
+  }, [gameState.gameStarted, gameState.gameOver, isPaused, isConnected, playerId])
 
   /**
    * Verifica colisión entre una pizza y un objeto rectangular
@@ -760,11 +832,11 @@ export default function PizzaDeliveryGame() {
    * Loop principal del juego que actualiza la lógica a 60 FPS
    */
   useEffect(() => {
-    if (!gameState.gameStarted || gameState.gameOver || isPaused) return
+    if (!gameState.gameStarted || gameState.gameOver || isPaused || !isConnected || !playerId) return;
 
     const gameLoop = () => {
       setGameState((prev) => {
-        const newState = { ...prev }
+        const newState = { ...prev };
 
         // ===== ACTUALIZAR TIMER =====
         newState.timeLeft -= 1 / 60
@@ -1117,6 +1189,18 @@ export default function PizzaDeliveryGame() {
           }
         }
 
+        // Enviar actualización de estado del jugador
+        if (gameClientRef.current) {
+          gameClientRef.current.updatePlayer({
+            id: playerId,
+            position: newState.player.position,
+            rotation: newState.player.rotation,
+            velocity: newState.player.velocity,
+            isCharging: newState.isCharging,
+            chargePower: newState.chargePower
+          });
+        }
+
         return newState
       })
 
@@ -1130,15 +1214,7 @@ export default function PizzaDeliveryGame() {
         cancelAnimationFrame(gameLoopRef.current)
       }
     }
-  }, [
-    gameState.gameStarted,
-    gameState.gameOver,
-    isPaused,
-    isOnStreet,
-    checkPizzaRectCollision,
-    calculatePizzaBounce,
-    updateVehiclePosition,
-  ])
+  }, [gameState.gameStarted, gameState.gameOver, isPaused, isConnected, playerId])
 
   // ===== SISTEMA DE RENDERIZADO =====
   /**
@@ -1550,7 +1626,42 @@ export default function PizzaDeliveryGame() {
       ctx.lineWidth = 2;
       ctx.stroke();
     }
-  }, [gameState, drawSprite, findNearestIntersection])
+
+    // Renderizar otros jugadores
+    Object.values(otherPlayers).forEach((player) => {
+      const screenX = player.position.x - camera.current.x;
+      const screenY = player.position.y - camera.current.y;
+
+      if (
+        screenX > -50 &&
+        screenX < CANVAS_WIDTH / CAMERA_ZOOM + 50 &&
+        screenY > -50 &&
+        screenY < CANVAS_HEIGHT / CAMERA_ZOOM + 50
+      ) {
+        // Dibujar otros jugadores con un color diferente
+        drawSprite(
+          ctx,
+          screenX,
+          screenY,
+          player.size.x,
+          player.size.y,
+          "moto",
+          1, // Usar un estilo diferente para otros jugadores
+          player.rotation
+        );
+
+        // Mostrar barra de carga si está cargando
+        if (player.isCharging) {
+          const powerPercent = player.chargePower / MAX_CHARGE_POWER;
+          ctx.fillStyle = `hsl(${120 * powerPercent}, 100%, 50%)`;
+          ctx.fillRect(screenX - 20, screenY - 30, 40 * powerPercent, 6);
+          ctx.strokeStyle = "#333";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(screenX - 20, screenY - 30, 40, 6);
+        }
+      }
+    });
+  }, [gameState, otherPlayers, drawSprite])
 
   // ===== FUNCIONES AUXILIARES =====
   /**
@@ -1578,6 +1689,12 @@ export default function PizzaDeliveryGame() {
   // ===== RENDERIZADO DEL COMPONENTE =====
   return (
     <div className="flex flex-col items-center bg-gray-900 h-screen p-2 relative">
+      {/* Agregar indicador de conexión */}
+      <div className="absolute top-2 right-2 flex items-center gap-2 text-white">
+        <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
+        <span>{isConnected ? `Connected (${latency}ms)` : 'Disconnected'}</span>
+      </div>
+
       {/* ===== HUD PRINCIPAL ===== */}
       <div className="flex gap-6 items-center text-white bg-gray-800 px-6 py-2 rounded-lg mb-2">
         <div className="text-xl font-bold">🍕 Pizza Delivery Rush</div>
