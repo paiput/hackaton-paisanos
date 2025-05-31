@@ -91,6 +91,17 @@ interface GameState {
   isBraking: boolean
   brakeCooldown: number
   currentSpeed: number
+  isTurning: boolean
+  turnFrictionPhase: "idle" | "decelerating" | "accelerating"
+  turnFrictionTimer: number
+  collisionRecoveryTimer: number
+  speedLevel: "min" | "normal" | "max"
+  targetSpeed: number
+  spinTimer: number // frames restantes de giro
+  spinCount: number // vueltas restantes
+  targetMaxSpeed: number
+  spinAngularSpeed: number; // velocidad angular actual
+  maxSpeed: number // velocidad máxima alcanzable actual
 }
 
 // ===== CONSTANTES DEL JUEGO =====
@@ -98,7 +109,9 @@ const CANVAS_WIDTH = 1200 // Ancho del canvas
 const CANVAS_HEIGHT = 800 // Alto del canvas
 const CITY_WIDTH = 2400 // Ancho total de la ciudad
 const CITY_HEIGHT = 1600 // Alto total de la ciudad
-const PLAYER_SPEED = 2.0 // Velocidad base reducida
+const PLAYER_SPEED_MIN = 0.7;
+const PLAYER_SPEED_NORMAL = 2.0;
+const PLAYER_SPEED_MAX = 3.2;
 const PLAYER_TURN_SPEED = 0.06 // Sensibilidad de giro reducida
 const PLAYER_BRAKE_SPEED = 0.8 // Velocidad durante el frenado
 const PLAYER_BRAKE_DURATION = 120 // Duración máxima del frenado en frames (2 segundos)
@@ -112,6 +125,10 @@ const BLOCK_SIZE = 200 // Tamaño de cada bloque de ciudad
 const STREET_WIDTH = 100 // Ancho de las calles (aumentado de 60 a 100)
 const CAMERA_ZOOM = 1.3 // Factor de zoom de la cámara (nuevo)
 const RECOVERY_SPEED = 0.08 // Velocidad de recuperación aumentada
+const SPEED_TRANSITION_FRAMES = 90; // 1.5 segundos a 60fps
+const SPEED_STEP = 0.56; // ~20 km/h en unidades de tu juego (ajusta según escala)
+const SPEED_MIN = 0.7;
+const SPEED_MAX = 5.0;
 
 // Constantes para el sistema de rutas
 const ROUTE_TYPES = {
@@ -160,7 +177,18 @@ export default function PizzaDeliveryGame() {
     playerPreviousRotation: 0,
     isBraking: false,
     brakeCooldown: 0,
-    currentSpeed: PLAYER_SPEED,
+    currentSpeed: PLAYER_SPEED_NORMAL,
+    isTurning: false,
+    turnFrictionPhase: "idle",
+    turnFrictionTimer: 0,
+    collisionRecoveryTimer: 0,
+    speedLevel: "normal",
+    targetSpeed: PLAYER_SPEED_NORMAL,
+    spinTimer: 0,
+    spinCount: 0,
+    targetMaxSpeed: PLAYER_SPEED_NORMAL,
+    spinAngularSpeed: 0,
+    maxSpeed: PLAYER_SPEED_NORMAL,
   })
 
   // Cámara que sigue al jugador con zoom
@@ -173,47 +201,60 @@ export default function PizzaDeliveryGame() {
    */
   const generateCity = useCallback((): Building[] => {
     const buildings: Building[] = []
-
-    // Crear bloques de ciudad en cuadrícula
     for (let x = 0; x < CITY_WIDTH; x += BLOCK_SIZE) {
       for (let y = 0; y < CITY_HEIGHT; y += BLOCK_SIZE) {
-        // Asegurar que todas las manzanas tengan edificios
-        const buildingWidth = BLOCK_SIZE - STREET_WIDTH
-        const buildingHeight = BLOCK_SIZE - STREET_WIDTH
-        const buildingX = x + STREET_WIDTH / 2
-        const buildingY = y + STREET_WIDTH / 2
-
-        // Crear múltiples edificios por bloque para variedad
-        const numBuildings = Math.floor(Math.random() * 2) + 2 // 2-3 edificios por bloque
-        for (let i = 0; i < numBuildings; i++) {
-          const subWidth = buildingWidth / numBuildings
+        // Decide aleatoriamente el tipo de manzana
+        const type = Math.random()
+        if (type < 0.33) {
+          // Un solo edificio grande
           buildings.push({
-            x: buildingX + i * subWidth,
-            y: buildingY,
-            width: subWidth - 10,
-            height: buildingHeight - Math.random() * 40, // Altura variable
+            x: x + STREET_WIDTH / 2,
+            y: y + STREET_WIDTH / 2,
+            width: BLOCK_SIZE - STREET_WIDTH,
+            height: BLOCK_SIZE - STREET_WIDTH,
             type: "building",
-            style: Math.floor(Math.random() * 3), // 3 estilos diferentes de edificios
+            style: Math.floor(Math.random() * 3),
+          })
+        } else if (type < 0.66) {
+          // Dos edificios rectangulares
+          buildings.push({
+            x: x + STREET_WIDTH / 2,
+            y: y + STREET_WIDTH / 2,
+            width: (BLOCK_SIZE - STREET_WIDTH) * 0.6,
+            height: BLOCK_SIZE - STREET_WIDTH,
+            type: "building",
+            style: Math.floor(Math.random() * 3),
+          })
+          buildings.push({
+            x: x + STREET_WIDTH / 2 + (BLOCK_SIZE - STREET_WIDTH) * 0.65,
+            y: y + STREET_WIDTH / 2,
+            width: (BLOCK_SIZE - STREET_WIDTH) * 0.3,
+            height: (BLOCK_SIZE - STREET_WIDTH) * 0.7,
+            type: "building",
+            style: Math.floor(Math.random() * 3),
+          })
+        } else {
+          // Forma L
+          buildings.push({
+            x: x + STREET_WIDTH / 2,
+            y: y + STREET_WIDTH / 2,
+            width: (BLOCK_SIZE - STREET_WIDTH) * 0.7,
+            height: (BLOCK_SIZE - STREET_WIDTH) * 0.4,
+            type: "building",
+            style: Math.floor(Math.random() * 3),
+          })
+          buildings.push({
+            x: x + STREET_WIDTH / 2,
+            y: y + STREET_WIDTH / 2 + (BLOCK_SIZE - STREET_WIDTH) * 0.45,
+            width: (BLOCK_SIZE - STREET_WIDTH) * 0.4,
+            height: (BLOCK_SIZE - STREET_WIDTH) * 0.5,
+            type: "building",
+            style: Math.floor(Math.random() * 3),
           })
         }
-
-        // Agregar decoraciones (árboles, postes, etc.) - menos frecuentes
-        if (Math.random() < 0.4) {
-          const numDecorations = Math.floor(Math.random() * 2) + 1
-          for (let i = 0; i < numDecorations; i++) {
-            buildings.push({
-              x: buildingX + Math.random() * (buildingWidth - 20),
-              y: buildingY + buildingHeight - 20 + Math.random() * 10,
-              width: 10 + Math.random() * 10,
-              height: 10 + Math.random() * 10,
-              type: "decoration",
-              style: Math.floor(Math.random() * 3), // 3 tipos de decoraciones
-            })
-          }
-        }
+        // Puedes agregar decoraciones aquí también
       }
     }
-
     return buildings
   }, [])
 
@@ -532,7 +573,17 @@ export default function PizzaDeliveryGame() {
       playerPreviousRotation: 0,
       isBraking: false,
       brakeCooldown: 0,
-      currentSpeed: PLAYER_SPEED,
+      currentSpeed: PLAYER_SPEED_NORMAL,
+      isTurning: false,
+      turnFrictionTimer: 0,
+      collisionRecoveryTimer: 0,
+      speedLevel: "normal",
+      targetSpeed: PLAYER_SPEED_NORMAL,
+      spinTimer: 0,
+      spinCount: 0,
+      targetMaxSpeed: PLAYER_SPEED_NORMAL,
+      spinAngularSpeed: 0,
+      maxSpeed: PLAYER_SPEED_NORMAL,
     }))
     setIsPaused(false)
   }, [generateCity, generateDeliveryPoints, generateVehicles, isOnStreet])
@@ -552,16 +603,20 @@ export default function PizzaDeliveryGame() {
 
       // Sistema de frenado con Shift
       if (e.key.toLowerCase() === "shift" && gameState.gameStarted && !gameState.gameOver) {
-        setGameState((prev) => {
-          if (prev.brakeCooldown <= 0 && !prev.isBraking) {
-            return {
-              ...prev,
-              isBraking: true,
-              brakeCooldown: PLAYER_BRAKE_COOLDOWN,
-            }
-          }
-          return prev
-        })
+        setGameState((prev) => ({
+          ...prev,
+          isBraking: true,
+          brakeCooldown: PLAYER_BRAKE_COOLDOWN,
+          maxSpeed: Math.min(SPEED_MAX, prev.maxSpeed + SPEED_STEP)
+        }))
+      }
+
+      // Sistema de aceleración con Ctrl
+      if (e.key.toLowerCase() === "control" && gameState.gameStarted && !gameState.gameOver) {
+        setGameState((prev) => ({
+          ...prev,
+          maxSpeed: Math.max(SPEED_MIN, prev.maxSpeed - SPEED_STEP)
+        }))
       }
     }
 
@@ -726,18 +781,56 @@ export default function PizzaDeliveryGame() {
           newState.brakeCooldown--
         }
 
-        if (newState.isBraking) {
-          // Reducir velocidad gradualmente
-          newState.currentSpeed = Math.max(
-            PLAYER_BRAKE_SPEED,
-            newState.currentSpeed - (PLAYER_SPEED - PLAYER_BRAKE_SPEED) / 30,
-          )
+        // Detectar si está girando
+        const isTurning = keysRef.current.has("a") || keysRef.current.has("d")
+
+        if (!prev.isTurning && isTurning) {
+          // Empezó a girar
+          newState.turnFrictionPhase = "decelerating"
+          newState.turnFrictionTimer = 15 // 0.25s
+        } else if (prev.isTurning && !isTurning) {
+          // Dejó de girar
+          newState.turnFrictionPhase = "accelerating"
+          newState.turnFrictionTimer = 30 // 0.5s
+        }
+
+        newState.isTurning = isTurning
+
+        if (newState.turnFrictionPhase === "decelerating") {
+          newState.currentSpeed = Math.max(PLAYER_SPEED_MIN, newState.currentSpeed - (PLAYER_SPEED_NORMAL * 0.4) / 15)
+          newState.turnFrictionTimer--
+          if (newState.turnFrictionTimer <= 0) {
+            newState.turnFrictionPhase = "accelerating"
+            newState.turnFrictionTimer = 30
+          }
+        } else if (newState.turnFrictionPhase === "accelerating") {
+          newState.currentSpeed = Math.min(PLAYER_SPEED_MAX, newState.currentSpeed + (PLAYER_SPEED_NORMAL * 0.4) / 30)
+          newState.turnFrictionTimer--
+          if (newState.turnFrictionTimer <= 0) {
+            newState.turnFrictionPhase = "idle"
+          }
+        }
+
+        // Detectar cambios de nivel de velocidad máxima
+        if (keysRef.current.has("shift")) {
+          newState.targetMaxSpeed = PLAYER_SPEED_MAX;
+        } else if (keysRef.current.has("control")) {
+          newState.targetMaxSpeed = PLAYER_SPEED_MIN;
         } else {
-          // Recuperar velocidad gradualmente
+          newState.targetMaxSpeed = PLAYER_SPEED_NORMAL;
+        }
+
+        // Acelera o desacelera progresivamente hacia la nueva velocidad máxima
+        if (newState.currentSpeed < newState.maxSpeed) {
           newState.currentSpeed = Math.min(
-            PLAYER_SPEED,
-            newState.currentSpeed + (PLAYER_SPEED - PLAYER_BRAKE_SPEED) / 30,
-          )
+            newState.maxSpeed,
+            newState.currentSpeed + (newState.maxSpeed - newState.currentSpeed) / SPEED_TRANSITION_FRAMES
+          );
+        } else if (newState.currentSpeed > newState.maxSpeed) {
+          newState.currentSpeed = Math.max(
+            newState.maxSpeed,
+            newState.currentSpeed - (newState.currentSpeed - newState.maxSpeed) / SPEED_TRANSITION_FRAMES
+          );
         }
 
         // ===== VERIFICAR CONDICIÓN DE VICTORIA =====
@@ -749,7 +842,10 @@ export default function PizzaDeliveryGame() {
 
         // ===== ACTUALIZAR CARGA DE POTENCIA =====
         if (newState.isCharging && newState.stunned <= 0) {
-          newState.chargePower = Math.min(newState.chargePower + 0.3, MAX_CHARGE_POWER)
+          newState.chargePower += 0.3;
+          if (newState.chargePower > MAX_CHARGE_POWER) {
+            newState.chargePower = 0; // Reinicia la barra
+          }
         }
 
         // ===== ACTUALIZAR ATURDIMIENTO =====
@@ -758,7 +854,7 @@ export default function PizzaDeliveryGame() {
         }
 
         // ===== MOVIMIENTO DEL JUGADOR =====
-        if (newState.stunned <= 0) {
+        if (newState.stunned <= 0 && newState.spinCount === 0) {
           // Guardar la rotación actual antes de cualquier cambio
           newState.playerPreviousRotation = newState.player.rotation
 
@@ -775,8 +871,24 @@ export default function PizzaDeliveryGame() {
           // La moto SIEMPRE se mueve hacia adelante con la velocidad actual
           newState.player.velocity.x = Math.cos(newState.player.rotation) * newState.currentSpeed
           newState.player.velocity.y = Math.sin(newState.player.rotation) * newState.currentSpeed
+        } else if (newState.spinCount > 0) {
+          // Gira en su lugar y desacelera el giro
+          newState.player.rotation += newState.spinAngularSpeed;
+          newState.spinAngularSpeed *= 0.97; // desacelera el giro cada frame
+          newState.player.velocity.x = 0;
+          newState.player.velocity.y = 0;
+          newState.spinTimer--;
+          if (newState.spinTimer <= 0) {
+            newState.spinCount--;
+            newState.spinTimer = 60; // siguiente vuelta
+            if (newState.spinCount === 0) {
+              newState.stunned = 0; // permite input
+              newState.spinAngularSpeed = 0;
+              newState.currentSpeed = 0; // queda quieto
+            }
+          }
         } else {
-          // Efecto de giro cuando está aturdido
+          // Efecto de giro cuando está aturdido (legacy, por si acaso)
           newState.player.rotation += 0.3
           newState.player.velocity.x *= 0.95
           newState.player.velocity.y *= 0.95
@@ -810,6 +922,10 @@ export default function PizzaDeliveryGame() {
             newState.stunned = STUN_DURATION
             newState.isCharging = false
             newState.chargePower = 0
+            newState.spinCount = 3;
+            newState.spinTimer = 60; // 1s por vuelta (ajusta si quieres más rápido)
+            newState.spinAngularSpeed = 0.35; // velocidad angular inicial
+            newState.currentSpeed = 0; // queda quieto
           }
         }
 
@@ -904,9 +1020,10 @@ export default function PizzaDeliveryGame() {
 
                 // Avanzar a la siguiente entrega
                 currentPoint.active = false
-                newState.currentDelivery++
                 newState.deliveriesCompleted++
+                newState.currentDelivery++
 
+                // Activar el siguiente punto de entrega si existe
                 if (newState.currentDelivery < newState.deliveryPoints.length) {
                   newState.deliveryPoints[newState.currentDelivery].active = true
                 }
@@ -943,6 +1060,33 @@ export default function PizzaDeliveryGame() {
 
           return true
         })
+
+        // En el game loop, recuperación progresiva:
+        if (newState.collisionRecoveryTimer > 0) {
+          newState.collisionRecoveryTimer--
+          newState.currentSpeed = Math.min(
+            PLAYER_SPEED_NORMAL,
+            newState.currentSpeed + PLAYER_SPEED_NORMAL / 30
+          )
+        }
+
+        if (newState.spinCount > 0) {
+          // Gira en su lugar y desacelera el giro
+          newState.player.rotation += newState.spinAngularSpeed;
+          newState.spinAngularSpeed *= 0.97; // desacelera el giro cada frame
+          newState.player.velocity.x = 0;
+          newState.player.velocity.y = 0;
+          newState.spinTimer--;
+          if (newState.spinTimer <= 0) {
+            newState.spinCount--;
+            newState.spinTimer = 60; // siguiente vuelta
+            if (newState.spinCount === 0) {
+              newState.stunned = 0; // permite input
+              newState.spinAngularSpeed = 0;
+              newState.currentSpeed = 0; // queda quieto
+            }
+          }
+        }
 
         return newState
       })
@@ -1198,6 +1342,8 @@ export default function PizzaDeliveryGame() {
 
     // ===== DIBUJAR PUNTOS DE ENTREGA =====
     gameState.deliveryPoints.forEach((point, index) => {
+      if (!point.active) return; // Solo dibujar el activo
+
       const screenX = point.position.x - camera.current.x
       const screenY = point.position.y - camera.current.y
 
@@ -1207,34 +1353,14 @@ export default function PizzaDeliveryGame() {
         screenY > -50 &&
         screenY < CANVAS_HEIGHT / CAMERA_ZOOM + 50
       ) {
-        if (point.active) {
-          // Punto de entrega activo SIN efecto de pulsación
-          ctx.fillStyle = "#ff6b6b"
-          ctx.strokeStyle = "#ff4444"
-          ctx.lineWidth = 3
-          ctx.beginPath()
-          ctx.arc(screenX, screenY, point.radius, 0, Math.PI * 2)
-          ctx.fill()
-          ctx.stroke()
-        } else if (index < gameState.currentDelivery) {
-          // Punto de entrega completado
-          ctx.fillStyle = "#51cf66"
-          ctx.strokeStyle = "#40c057"
-          ctx.lineWidth = 2
-          ctx.beginPath()
-          ctx.arc(screenX, screenY, point.radius, 0, Math.PI * 2)
-          ctx.fill()
-          ctx.stroke()
-        } else {
-          // Punto de entrega futuro
-          ctx.fillStyle = "rgba(134, 142, 150, 0.5)"
-          ctx.strokeStyle = "#495057"
-          ctx.lineWidth = 1
-          ctx.beginPath()
-          ctx.arc(screenX, screenY, point.radius, 0, Math.PI * 2)
-          ctx.fill()
-          ctx.stroke()
-        }
+        // Punto de entrega activo SIN efecto de pulsación
+        ctx.fillStyle = "#ff6b6b"
+        ctx.strokeStyle = "#ff4444"
+        ctx.lineWidth = 3
+        ctx.beginPath()
+        ctx.arc(screenX, screenY, point.radius, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.stroke()
 
         // Dibujar número del punto
         ctx.fillStyle = "white"
@@ -1382,22 +1508,19 @@ export default function PizzaDeliveryGame() {
     ctx.arc(minimapPlayerX, minimapPlayerY, 3, 0, Math.PI * 2)
     ctx.fill()
 
-    // Puntos de entrega en el minimapa
-    gameState.deliveryPoints.forEach((point, index) => {
-      const minimapPointX = minimapX + (point.position.x / CITY_WIDTH) * minimapSize
-      const minimapPointY = minimapY + (point.position.y / CITY_HEIGHT) * minimapSize
-
-      if (point.active) {
-        ctx.fillStyle = "#ff6b6b"
-      } else if (index < gameState.currentDelivery) {
-        ctx.fillStyle = "#51cf66"
-      } else {
-        ctx.fillStyle = "#868e96"
-      }
-      ctx.beginPath()
-      ctx.arc(minimapPointX, minimapPointY, 2, 0, Math.PI * 2)
-      ctx.fill()
-    })
+    // Después de dibujar los edificios en el minimapa
+    const activePoint = gameState.deliveryPoints.find((p) => p.active);
+    if (activePoint) {
+      const minimapPointX = minimapX + (activePoint.position.x / CITY_WIDTH) * minimapSize;
+      const minimapPointY = minimapY + (activePoint.position.y / CITY_HEIGHT) * minimapSize;
+      ctx.fillStyle = "#ff6b6b";
+      ctx.beginPath();
+      ctx.arc(minimapPointX, minimapPointY, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
   }, [gameState, drawSprite, findNearestIntersection])
 
   // ===== FUNCIONES AUXILIARES =====
@@ -1448,6 +1571,13 @@ export default function PizzaDeliveryGame() {
             <div className="flex items-center gap-2">
               <span>💰</span>
               <span>{gameState.score}</span>
+            </div>
+            {/* Indicador de velocidad máxima */}
+            <div className="flex items-center gap-2">
+              <span>🚦</span>
+              <span>
+                Velocidad: {gameState.maxSpeed <= 1.0 ? "Baja" : gameState.maxSpeed >= 3.0 ? "Alta" : "Media"} ({(gameState.maxSpeed * 36).toFixed(0)} km/h)
+              </span>
             </div>
             {gameState.stunned > 0 && <div className="text-red-400 font-bold animate-pulse">💫 ¡ATURDIDO!</div>}
           </>
