@@ -17,9 +17,10 @@ const MOVE_SPEED = 3; // Pixels per frame for smoother movement
 const SHOT_SPEED = 7;
 const SHOT_LIFETIME_MS = 1500; // Shots disappear after 1.5 seconds
 const SHOT_SIZE = 6;
+const POSITION_UPDATE_INTERVAL_MS = 50; // Send position updates 20 times/sec
 
 const GameRoom: React.FC<GameRoomProps> = ({ roomId, playerId }) => {
-  const { gameRoomState, sendPlayerPosition, sendGameEvent, isPresent } = useGameRoom({
+  const { gameRoomState, sendPlayerPosition, sendGameEvent, isPresent, lastRemoteShot } = useGameRoom({
     roomId,
     playerId,
   });
@@ -36,7 +37,8 @@ const GameRoom: React.FC<GameRoomProps> = ({ roomId, playerId }) => {
   const mousePositionRef = useRef<{x: number, y: number}>({ x: 0, y: 0});
 
   const movementKeys = useRef({ w: false, a: false, s: false, d: false });
-  const gameLoopRef = useRef<number>();
+  const gameLoopRef = useRef<number | undefined>(undefined);
+  const positionUpdateTimerRef = useRef<NodeJS.Timeout | undefined>(undefined);
 
   const localPlayerColor = useMemo(() => {
     let hash = 0;
@@ -46,35 +48,56 @@ const GameRoom: React.FC<GameRoomProps> = ({ roomId, playerId }) => {
     return PLAYER_COLORS[Math.abs(hash) % PLAYER_COLORS.length];
   }, [playerId]);
 
-  // Send position updates when localPosition changes and client is present
+  // Send position updates at a fixed interval
   useEffect(() => {
     if (isPresent) {
-      sendPlayerPosition({ x: localPosition.x, y: localPosition.y });
+      positionUpdateTimerRef.current = setInterval(() => {
+        sendPlayerPosition({ x: localPosition.x, y: localPosition.y });
+      }, POSITION_UPDATE_INTERVAL_MS);
+    } else {
+      if (positionUpdateTimerRef.current) {
+        clearInterval(positionUpdateTimerRef.current);
+      }
     }
-  }, [isPresent, localPosition, sendPlayerPosition]);
+    return () => {
+      if (positionUpdateTimerRef.current) {
+        clearInterval(positionUpdateTimerRef.current);
+      }
+    };
+  }, [isPresent, localPosition.x, localPosition.y, sendPlayerPosition]); // localPosition parts to ensure latest is sent
 
-  // Game loop for continuous movement
+  // Effect to handle incoming remote shots from the hook
+  useEffect(() => {
+    if (lastRemoteShot) {
+      // Ensure we don't re-add the same shot if the hook prop updates without a new shot ID
+      setActiveShots(prev => {
+        if (prev[lastRemoteShot.id]) {
+          return prev; // Already have this shot
+        }
+        return { ...prev, [lastRemoteShot.id]: lastRemoteShot };
+      });
+    }
+  }, [lastRemoteShot]); // Trigger when a new remote shot is received
+
+  // Game loop for movement and projectiles
   useEffect(() => {
     const updateGame = () => {
       const now = Date.now();
-      if (!isPresent) {
-        gameLoopRef.current = requestAnimationFrame(updateGame);
-        return;
-      }
+      // Player Movement
+      if (isPresent) {
+        let dx = 0;
+        let dy = 0;
+        if (movementKeys.current.w) dy -= MOVE_SPEED;
+        if (movementKeys.current.s) dy += MOVE_SPEED;
+        if (movementKeys.current.a) dx -= MOVE_SPEED;
+        if (movementKeys.current.d) dx += MOVE_SPEED;
 
-      let dx = 0;
-      let dy = 0;
-
-      if (movementKeys.current.w) dy -= MOVE_SPEED;
-      if (movementKeys.current.s) dy += MOVE_SPEED;
-      if (movementKeys.current.a) dx -= MOVE_SPEED;
-      if (movementKeys.current.d) dx += MOVE_SPEED;
-
-      if (dx !== 0 || dy !== 0) {
-        setLocalPosition((prev) => ({
-          x: Math.max(0, Math.min(prev.x + dx, GAME_AREA_WIDTH - PLAYER_SIZE)),
-          y: Math.max(0, Math.min(prev.y + dy, GAME_AREA_HEIGHT - PLAYER_SIZE)),
-        }));
+        if (dx !== 0 || dy !== 0) {
+          setLocalPosition((prev) => ({
+            x: Math.max(0, Math.min(prev.x + dx, GAME_AREA_WIDTH - PLAYER_SIZE)),
+            y: Math.max(0, Math.min(prev.y + dy, GAME_AREA_HEIGHT - PLAYER_SIZE)),
+          }));
+        }
       }
 
       // Update and filter shots
@@ -88,6 +111,8 @@ const GameRoom: React.FC<GameRoomProps> = ({ roomId, playerId }) => {
               x: shot.x + shot.dx * SHOT_SPEED,
               y: shot.y + shot.dy * SHOT_SPEED,
             };
+          } else {
+            // Optional: callback or event if a shot hits something or expires
           }
         }
         return updatedShots;
@@ -97,7 +122,6 @@ const GameRoom: React.FC<GameRoomProps> = ({ roomId, playerId }) => {
     };
 
     gameLoopRef.current = requestAnimationFrame(updateGame);
-
     return () => {
       if (gameLoopRef.current) {
         cancelAnimationFrame(gameLoopRef.current);
@@ -105,58 +129,31 @@ const GameRoom: React.FC<GameRoomProps> = ({ roomId, playerId }) => {
     };
   }, [isPresent]); // Rerun loop logic if presence changes
 
-  // Event listeners for key presses
+  // Key press listeners
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       switch (event.key.toLowerCase()) {
-        case 'w':
-        case 'arrowup':
-          movementKeys.current.w = true;
-          break;
-        case 's':
-        case 'arrowdown':
-          movementKeys.current.s = true;
-          break;
-        case 'a':
-        case 'arrowleft':
-          movementKeys.current.a = true;
-          break;
-        case 'd':
-        case 'arrowright':
-          movementKeys.current.d = true;
-          break;
+        case 'w': movementKeys.current.w = true; break;
+        case 's': movementKeys.current.s = true; break;
+        case 'a': movementKeys.current.a = true; break;
+        case 'd': movementKeys.current.d = true; break;
       }
     };
-
     const handleKeyUp = (event: KeyboardEvent) => {
       switch (event.key.toLowerCase()) {
-        case 'w':
-        case 'arrowup':
-          movementKeys.current.w = false;
-          break;
-        case 's':
-        case 'arrowdown':
-          movementKeys.current.s = false;
-          break;
-        case 'a':
-        case 'arrowleft':
-          movementKeys.current.a = false;
-          break;
-        case 'd':
-        case 'arrowright':
-          movementKeys.current.d = false;
-          break;
+        case 'w': movementKeys.current.w = false; break;
+        case 's': movementKeys.current.s = false; break;
+        case 'a': movementKeys.current.a = false; break;
+        case 'd': movementKeys.current.d = false; break;
       }
     };
-
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
-
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, []); // Empty dependency array ensures this runs once on mount and cleans up on unmount
+  }, []);
 
   // Mouse move listener for aiming
   useEffect(() => {
@@ -172,12 +169,12 @@ const GameRoom: React.FC<GameRoomProps> = ({ roomId, playerId }) => {
     };
     area.addEventListener('mousemove', handleMouseMove);
     return () => area.removeEventListener('mousemove', handleMouseMove);
-  }, [gameAreaRef.current]); // Re-add if gameAreaRef changes (it shouldn't after mount)
+  }, []); // gameAreaRef.current is stable after first render
 
   const handleManualMove = useCallback((dx: number, dy: number) => {
      if (!isPresent) return;
       setLocalPosition((prev) => ({
-        x: Math.max(0, Math.min(prev.x + dx * MOVE_SPEED * 3, GAME_AREA_WIDTH - PLAYER_SIZE)), // Buttons x3 speed factor
+        x: Math.max(0, Math.min(prev.x + dx * MOVE_SPEED * 3, GAME_AREA_WIDTH - PLAYER_SIZE)),
         y: Math.max(0, Math.min(prev.y + dy * MOVE_SPEED * 3, GAME_AREA_HEIGHT - PLAYER_SIZE)),
       }));
   }, [isPresent]);
@@ -189,11 +186,16 @@ const GameRoom: React.FC<GameRoomProps> = ({ roomId, playerId }) => {
     const playerCenterY = localPosition.y + PLAYER_SIZE / 2;
 
     const angle = Math.atan2(mousePositionRef.current.y - playerCenterY, mousePositionRef.current.x - playerCenterX);
-    const dx = Math.cos(angle);
-    const dy = Math.sin(angle);
+    const dxUnnormalized = mousePositionRef.current.x - playerCenterX;
+    const dyUnnormalized = mousePositionRef.current.y - playerCenterY;
+    const magnitude = Math.sqrt(dxUnnormalized * dxUnnormalized + dyUnnormalized * dyUnnormalized);
+
+    // Avoid division by zero if mouse is exactly on player center
+    const dx = magnitude === 0 ? 0 : dxUnnormalized / magnitude;
+    const dy = magnitude === 0 ? 1 : dyUnnormalized / magnitude; // Default to shooting down if no direction
 
     const newShot: Shot = {
-      id: `${playerId}-${Date.now()}`,
+      id: `${playerId}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       playerId,
       x: playerCenterX - SHOT_SIZE / 2, // Start shot from player center
       y: playerCenterY - SHOT_SIZE / 2,
@@ -202,7 +204,7 @@ const GameRoom: React.FC<GameRoomProps> = ({ roomId, playerId }) => {
       spawnTime: Date.now(),
     };
 
-    setActiveShots(prev => ({ ...prev, [newShot.id]: newShot }));
+    setActiveShots(prev => ({ ...prev, [newShot.id]: newShot })); // Optimistic update
     sendGameEvent({
       type: 'shoot',
       payload: newShot,
@@ -215,13 +217,12 @@ const GameRoom: React.FC<GameRoomProps> = ({ roomId, playerId }) => {
     if (!area) return;
 
     const handleClick = (event: MouseEvent) => {
-        // Optional: check if click is within bounds if needed, though gameAreaRef covers it
         handleShoot();
     };
 
     area.addEventListener('click', handleClick);
     return () => area.removeEventListener('click', handleClick);
-  }, [handleShoot]); // Re-add if handleShoot changes
+  }, [handleShoot]);
 
   const getPlayerColor = useCallback((pId: string) => {
     if (pId === playerId) return localPlayerColor;
@@ -245,6 +246,7 @@ const GameRoom: React.FC<GameRoomProps> = ({ roomId, playerId }) => {
         <button onClick={() => handleManualMove(1, 0)} disabled={!isPresent} style={{margin: '2px'}}>Right</button>
       </div>
       <p style={{fontSize: '0.9em', color: '#555'}}>Use WASD/Arrows to move. Click in game area to shoot.</p>
+      <p style={{fontSize: '0.8em', color: '#777'}}>Position Updates: ~{1000/POSITION_UPDATE_INTERVAL_MS} per second</p>
 
       {/* Game Area */} 
       <div 
@@ -288,7 +290,7 @@ const GameRoom: React.FC<GameRoomProps> = ({ roomId, playerId }) => {
               height: `${PLAYER_SIZE}px`,
               backgroundColor: getPlayerColor(player.playerId),
               borderRadius: '50%',
-              transition: 'left 0.1s linear, top 0.1s linear', // Slightly faster transition for remote players
+              transition: 'left 0.05s linear, top 0.05s linear', // Faster transition for remote players
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -327,9 +329,6 @@ const GameRoom: React.FC<GameRoomProps> = ({ roomId, playerId }) => {
         )}
       </div>
       <p style={{marginTop: '10px', fontSize: '0.9em', color: '#555'}}>Players in room: {Object.keys(gameRoomState.players).length} (You are {isPresent ? 'in' : 'not in'} this count)</p>
-      <p style={{fontSize: '0.8em', color: '#777'}}>Game Area: {GAME_AREA_WIDTH}x{GAME_AREA_HEIGHT}</p>
-      <p style={{fontSize: '0.8em', color: '#777'}}>Mouse: ({Math.round(mousePositionRef.current.x)}, {Math.round(mousePositionRef.current.y)})</p>
-      <p style={{fontSize: '0.8em', color: '#777'}}>Active Shots: {Object.keys(activeShots).length}</p>
     </div>
   );
 };

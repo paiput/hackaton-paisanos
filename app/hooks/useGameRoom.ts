@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { PlayerPosition, GameEvent, GameRoomState, Shot } from '../types/game';
 import { RealtimeChannel, RealtimePresenceState } from '@supabase/supabase-js';
@@ -18,6 +18,7 @@ export function useGameRoom({ roomId, playerId }: UseGameRoomOptions) {
     roomId,
   });
   const [isPresent, setIsPresent] = useState(false);
+  const [lastRemoteShot, setLastRemoteShot] = useState<Shot | null>(null);
   const channelRef = useRef<RealtimeChannel | null>(null);
 
   useEffect(() => {
@@ -26,7 +27,7 @@ export function useGameRoom({ roomId, playerId }: UseGameRoomOptions) {
     const roomChannel = supabase.channel(`room:${roomId}`, {
       config: {
         presence: {
-          key: playerId, // Unique key for this client
+          key: playerId,
         },
       },
     });
@@ -34,18 +35,14 @@ export function useGameRoom({ roomId, playerId }: UseGameRoomOptions) {
     // --- Presence ---    
     roomChannel.on('presence', { event: 'sync' }, () => {
       const presenceState = roomChannel.presenceState<PlayerPosition>();
-      console.log('Presence sync:', presenceState);
-      // Update player list based on presence, potentially removing stale players
-      // For simplicity, we are mainly focusing on position updates here
-      // You might want to merge this with player positions received via broadcast
+      // console.log('Presence sync:', presenceState);
     });
 
     roomChannel.on(
       'presence',
       { event: 'join' },
       ({ key, newPresences }) => {
-        console.log('Player joined:', key, newPresences);
-        // You could initialize the new player's state here if needed
+        // console.log('Player joined:', key, newPresences);
       }
     );
 
@@ -53,7 +50,7 @@ export function useGameRoom({ roomId, playerId }: UseGameRoomOptions) {
       'presence',
       { event: 'leave' },
       ({ key, leftPresences }) => {
-        console.log('Player left:', key, leftPresences);
+        // console.log('Player left:', key, leftPresences);
         setGameRoomState((prevState) => {
           const updatedPlayers = { ...prevState.players };
           if (updatedPlayers[key]) {
@@ -69,10 +66,9 @@ export function useGameRoom({ roomId, playerId }: UseGameRoomOptions) {
       'broadcast',
       { event: 'player_position' },
       ({ payload }) => {
-        // console.log('Received position for player:', payload.playerId, payload);
+        if (payload.playerId === playerId) return;
         setGameRoomState((prevState) => {
           const existingPlayer = prevState.players[payload.playerId];
-          // Simple conflict resolution: last write wins based on client timestamp
           if (!existingPlayer || payload.timestamp > existingPlayer.timestamp) {
             return {
               ...prevState,
@@ -90,19 +86,17 @@ export function useGameRoom({ roomId, playerId }: UseGameRoomOptions) {
     // --- Game Event Broadcast ---    
     roomChannel.on<GameEvent>(
       'broadcast',
-      { event: 'game_event' },
-      ({ payload }) => {
-        // console.log('Received game event:', payload);
-        if (payload.type === 'shoot') {
-          // The payload here is already a GameEvent, and its .payload is the Shot
-          // We will handle the visual representation of the shot in the component itself
-          // For now, just log it or potentially pass it up if the hook managed shots.
-          console.log('Received shoot event:', payload.payload as Shot);
-        } else {
-          console.log('Received other game event:', payload.type, payload.payload);
+      { event: 'game_event' }, 
+      ({ payload: gameEvent }) => {
+        if (gameEvent.senderId !== playerId) {
+          if (gameEvent.type === 'shoot') {
+            const shotData = gameEvent.payload as Shot;
+            // console.log('Hook received remote shoot event:', shotData);
+            setLastRemoteShot(shotData);
+          } else {
+            // console.log('Hook received other remote game event:', gameEvent.type, gameEvent.payload);
+          }
         }
-        // This hook currently doesn't manage a list of all game events in its state.
-        // The component consuming the hook will handle the effects of events.
       }
     );
 
@@ -113,19 +107,17 @@ export function useGameRoom({ roomId, playerId }: UseGameRoomOptions) {
           setIsPresent(false);
           return;
         }
-
         if (status === 'SUBSCRIBED') {
-          console.log(`Successfully subscribed to room: ${roomId}`);
+          // console.log(`Successfully subscribed to room: ${roomId}`);
           const presenceTrackStatus = await roomChannel.track({ 
             online_at: new Date().toISOString(),
-            // You can add other user-specific presence data here
           });
           if (presenceTrackStatus === 'ok') {
             setIsPresent(true);
-            console.log('Presence tracked successfully');
+            // console.log('Presence tracked successfully');
           } else {
             console.error('Failed to track presence:', presenceTrackStatus);
-            setIsPresent(false); // Ensure isPresent reflects tracking failure
+            setIsPresent(false);
           }
         } else if (status === 'CHANNEL_ERROR') {
           console.error(`Channel error for room: ${roomId}`);
@@ -134,7 +126,7 @@ export function useGameRoom({ roomId, playerId }: UseGameRoomOptions) {
           console.warn(`Subscription timed out for room: ${roomId}`);
           setIsPresent(false);
         } else {
-          console.log('Channel status:', status);
+          // console.log('Channel status:', status);
         }
       });
 
@@ -142,7 +134,7 @@ export function useGameRoom({ roomId, playerId }: UseGameRoomOptions) {
 
     return () => {
       if (channelRef.current) {
-        console.log(`Unsubscribing from room: ${roomId}`);
+        // console.log(`Unsubscribing from room: ${roomId}`);
         channelRef.current.untrack();
         supabase.removeChannel(channelRef.current);
         channelRef.current = null;
@@ -151,42 +143,40 @@ export function useGameRoom({ roomId, playerId }: UseGameRoomOptions) {
     };
   }, [roomId, playerId]);
 
-  const sendPlayerPosition = (position: Omit<PlayerPosition, 'playerId' | 'timestamp'>) => {
+  const sendPlayerPosition = useCallback((position: Omit<PlayerPosition, 'playerId' | 'timestamp'>) => {
     if (channelRef.current && isPresent) {
       const playerPosition: PlayerPosition = {
         ...position,
         playerId,
         timestamp: Date.now(),
       };
-      // console.log('Sending position:', playerPosition);
       channelRef.current.send({
         type: 'broadcast',
         event: 'player_position',
         payload: playerPosition,
       });
     } else {
-      console.warn('Cannot send position: channel not ready or presence not tracked.');
+      // console.warn('Cannot send position: channel not ready or presence not tracked.');
     }
-  };
+  }, [playerId, isPresent]);
 
-  const sendGameEvent = (eventData: Omit<GameEvent, 'eventId' | 'timestamp' | 'senderId'>) => {
+  const sendGameEvent = useCallback((eventData: Omit<GameEvent, 'eventId' | 'timestamp' | 'senderId'>) => {
     if (channelRef.current && isPresent) {
       const gameEvent: GameEvent = {
         ...eventData,
-        eventId: `${playerId}-${Date.now()}`,
+        eventId: `${playerId}-${Date.now()}-${Math.random().toString(36).substring(2,5)}`,
         timestamp: Date.now(),
         senderId: playerId
       };
-      // console.log('Sending game event:', gameEvent);
       channelRef.current.send({
         type: 'broadcast',
         event: 'game_event',
-        payload: gameEvent, // Send the whole GameEvent object as payload
+        payload: gameEvent,
       });
     } else {
-      console.warn('Cannot send game event: channel not ready or presence not tracked.');
+      // console.warn('Cannot send game event: channel not ready or presence not tracked.');
     }
-  };
+  }, [playerId, isPresent]);
 
-  return { gameRoomState, sendPlayerPosition, sendGameEvent, isPresent };
+  return { gameRoomState, sendPlayerPosition, sendGameEvent, isPresent, lastRemoteShot };
 } 
