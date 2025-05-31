@@ -963,8 +963,24 @@ export default function PizzaDeliveryGame() {
           // Actualizar posición de la pizza
           pizza.position.x += pizza.velocity.x
           pizza.position.y += pizza.velocity.y
-          pizza.velocity.x *= 0.96 // Fricción
-          pizza.velocity.y *= 0.96
+
+          // Efecto magnético suave hacia el punto de entrega cuando está cerca
+          const currentPoint = newState.deliveryPoints[newState.currentDelivery]
+          if (currentPoint && currentPoint.active && pizza.sliding) {
+            const dx = currentPoint.position.x - pizza.position.x
+            const dy = currentPoint.position.y - pizza.position.y
+            const distanceToPoint = Math.sqrt(dx * dx + dy * dy)
+
+            if (distanceToPoint < currentPoint.radius * 1.5) { // Radio de influencia magnética
+              const magnetStrength = 0.015
+              pizza.velocity.x += (dx / distanceToPoint) * magnetStrength
+              pizza.velocity.y += (dy / distanceToPoint) * magnetStrength
+            }
+          }
+
+          // Fricción reducida
+          pizza.velocity.x *= 0.98
+          pizza.velocity.y *= 0.98
 
           // Colisión con edificios
           let hasCollided = false
@@ -1001,14 +1017,14 @@ export default function PizzaDeliveryGame() {
             }
           }
 
-          // Verificar si la pizza dejó de deslizarse
+          // Verificar si la pizza dejó de deslizarse (umbral aumentado)
           const speed = Math.sqrt(pizza.velocity.x * pizza.velocity.x + pizza.velocity.y * pizza.velocity.y)
-          if (speed < 0.2 && pizza.sliding) {
+          if (speed < 0.35 && pizza.sliding) {
             pizza.sliding = false
 
             // ===== CALCULAR PUNTUACIÓN FINAL =====
             const currentPoint = newState.deliveryPoints[newState.currentDelivery]
-            if (currentPoint) {
+            if (currentPoint && currentPoint.active) { // Verificar que el punto esté activo
               const dx = pizza.position.x - currentPoint.position.x
               const dy = pizza.position.y - currentPoint.position.y
               const distance = Math.sqrt(dx * dx + dy * dy)
@@ -1023,32 +1039,26 @@ export default function PizzaDeliveryGame() {
                 const points = Math.floor(accuracy * 150) + 50 // 50-200 puntos
                 newState.score += points
 
-                // Actualizar contador de entregas
+                // Actualizar contador de entregas (asegurar que sea un número)
                 newState.deliveriesCompleted = (newState.deliveriesCompleted || 0) + 1
 
-                // Desactivar todos los puntos
-                newState.deliveryPoints.forEach((p) => { p.active = false })
+                // Desactivar el punto actual
+                currentPoint.active = false
+
                 // Avanzar a la siguiente entrega
                 newState.currentDelivery++
+
                 // Activar el siguiente punto de entrega si existe
                 if (newState.currentDelivery < newState.deliveryPoints.length) {
                   newState.deliveryPoints[newState.currentDelivery].active = true
                 }
 
                 return false
-              } else {
-                // ===== ENTREGA FALLIDA =====
-                // Penalización basada en distancia
-                const penalty = Math.min(Math.floor(distance / 10), 50)
-                newState.score = Math.max(0, newState.score - penalty)
-                pizza.active = false
-                return false
               }
-            } else {
-              // No hay punto de entrega válido
-              pizza.active = false
-              return false
             }
+            // Si no está en el punto de entrega o el punto no está activo
+            pizza.active = false
+            return false
           }
 
           // Remover pizza si sale de los límites
