@@ -154,6 +154,34 @@ export default function PizzaDeliveryGame() {
   const keysRef = useRef<Set<string>>(new Set())
   const mouseRef = useRef<{ x: number; y: number; down: boolean }>({ x: 0, y: 0, down: false })
 
+  // Referencias para los audios de entrega
+  const deliveryAudios = useRef<HTMLAudioElement[]>([]);
+
+  // Inicializar los audios una vez al montar el componente
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      deliveryAudios.current = [
+        // new Audio('/audio/llegaron-las-pipshash-1.mp3'),
+        new Audio('/audio/llegaron-las-pipshash-2.mp3')
+      ];
+      // Precargar los audios
+      deliveryAudios.current.forEach(audio => {
+        audio.load();
+        audio.volume = 0.7;
+      });
+    }
+  }, []);
+
+  // Función para reproducir un audio aleatorio de entrega
+  const playRandomDeliverySound = useCallback(() => {
+    if (typeof window !== 'undefined' && deliveryAudios.current.length > 0) {
+      const randomIndex = Math.floor(Math.random() * deliveryAudios.current.length);
+      const audio = deliveryAudios.current[randomIndex];
+      audio.currentTime = 0; // Reiniciar el audio si estaba reproduciéndose
+      audio.play().catch(err => console.log('Error reproduciendo audio:', err));
+    }
+  }, []);
+
   // Estado de pausa
   const [isPaused, setIsPaused] = useState(false)
 
@@ -207,7 +235,7 @@ export default function PizzaDeliveryGame() {
 
   const [playerName, setPlayerName] = useState<string>("");
   const [socket, setSocket] = useState<GameClient | null>(null);
-  const [networkPlayers, setNetworkPlayers] = useState<{[id: string]: NetworkPlayer}>({});
+  const [networkPlayers, setNetworkPlayers] = useState<{ [id: string]: NetworkPlayer }>({});
 
   // Initialize socket connection
   useEffect(() => {
@@ -337,7 +365,7 @@ export default function PizzaDeliveryGame() {
           })
         } else if (type < 0.66) {
           // Dos edificios rectangulares
-            buildings.push({
+          buildings.push({
             x: x + STREET_WIDTH / 2,
             y: y + STREET_WIDTH / 2,
             width: (BLOCK_SIZE - STREET_WIDTH) * 0.6,
@@ -431,11 +459,11 @@ export default function PizzaDeliveryGame() {
           }
 
           if (!tooClose) {
-          points.push({
-            position: { x, y },
+            points.push({
+              position: { x, y },
               active: points.length === 0, // Only first point is active
-            radius: 40,
-          })
+              radius: 40,
+            })
           }
         }
         attempts++
@@ -869,6 +897,9 @@ export default function PizzaDeliveryGame() {
               sliding: true,
             };
 
+            // Reproducir sonido de entrega
+            playRandomDeliverySound();
+
             return {
               ...prev,
               pizzas: [...prev.pizzas, newPizza],
@@ -928,6 +959,9 @@ export default function PizzaDeliveryGame() {
                 sliding: true,
               };
 
+              // Reproducir sonido de entrega
+              playRandomDeliverySound();
+
               return {
                 ...prev,
                 pizzas: [...prev.pizzas, newPizza],
@@ -935,8 +969,8 @@ export default function PizzaDeliveryGame() {
                 chargePower: 0,
                 pizzasRemaining: prev.pizzasRemaining - 1,
               };
-              }
             }
+          }
           return { ...prev, isCharging: false, chargePower: 0 };
         });
       }
@@ -1243,6 +1277,9 @@ export default function PizzaDeliveryGame() {
               pizza.delivered = true;
               pizza.active = false;
 
+              // Reproducir sonido de entrega
+              playRandomDeliverySound();
+
               // Calcular puntos basados en precisión
               const effectiveDistance = Math.max(0, distance - PIZZA_RADIUS);
               const accuracy = Math.max(0, Math.min(1, 1 - effectiveDistance / currentPoint.radius));
@@ -1359,6 +1396,9 @@ export default function PizzaDeliveryGame() {
                 pizza.delivered = true
                 pizza.active = false
 
+                // Reproducir sonido de entrega
+                playRandomDeliverySound();
+
                 // Calcular puntos basados en precisión (ajustado para considerar el radio de la pizza)
                 const effectiveDistance = Math.max(0, distance - PIZZA_RADIUS)
                 const accuracy = 1 - effectiveDistance / currentPoint.radius
@@ -1406,8 +1446,8 @@ export default function PizzaDeliveryGame() {
             // Pizza falló la entrega
             console.log('Pizza falló la entrega')
             pizza.delivered = false
-              pizza.active = false
-              return false
+            pizza.active = false
+            return false
           }
 
           // Remover pizza si sale de los límites
@@ -2136,7 +2176,7 @@ export default function PizzaDeliveryGame() {
 
     return () => clearInterval(updateInterval);
   }, [socket, gameState.gameStarted, gameState.player.position, gameState.player.rotation,
-      gameState.player.velocity, gameState.isCharging, gameState.chargePower, gameState.player.name]);
+    gameState.player.velocity, gameState.isCharging, gameState.chargePower, gameState.player.name]);
 
   // ===== RENDERIZADO DEL COMPONENTE =====
   return (
@@ -2178,20 +2218,20 @@ export default function PizzaDeliveryGame() {
 
       {/* ===== CANVAS DEL JUEGO ===== */}
       <div className="flex-1 flex items-center justify-center min-h-0">
-      <canvas
-        ref={canvasRef}
-        width={CANVAS_WIDTH}
-        height={CANVAS_HEIGHT}
+        <canvas
+          ref={canvasRef}
+          width={CANVAS_WIDTH}
+          height={CANVAS_HEIGHT}
           className="border-2 border-gray-600 bg-gray-700 max-h-[calc(100vh-8rem)]"
           style={{ imageRendering: "pixelated", aspectRatio: `${CANVAS_WIDTH}/${CANVAS_HEIGHT}` }}
-      />
+        />
       </div>
 
       {/* ===== PANTALLA DE INICIO ===== */}
       {!gameState.gameStarted && (
         <div className="fixed inset-0 flex items-center justify-center bg-gray-900 bg-opacity-80 z-50">
           <Card className="p-6 text-center max-w-md">
-          <h2 className="text-2xl font-bold mb-4">🍕 Pizza Delivery Rush</h2>
+            <h2 className="text-2xl font-bold mb-4">🍕 Pizza Delivery Rush</h2>
             <div className="mb-6">
               <h3 className="text-lg font-semibold mb-2">Ingresa tu nombre:</h3>
               <input
@@ -2208,55 +2248,55 @@ export default function PizzaDeliveryGame() {
                   <li>Entrega {REQUIRED_DELIVERIES} pizzas antes que se acabe el tiempo</li>
                   <li>Usa el mouse para apuntar y lanzar</li>
                   <li>Evita los edificios y vehículos</li>
-              <li>Más cerca del centro = más propina</li>
-            </ul>
-          </div>
+                  <li>Más cerca del centro = más propina</li>
+                </ul>
+              </div>
             </div>
             <Button
               onClick={handleStartGame}
               className="w-full"
               disabled={!playerName.trim()}
             >
-            🚀 Comenzar Entrega
-          </Button>
-        </Card>
+              🚀 Comenzar Entrega
+            </Button>
+          </Card>
         </div>
       )}
 
       {/* ===== PANTALLA DE GAME OVER ===== */}
       {gameState.gameOver && (
         <div className="fixed top-0 left-0 w-full h-full flex items-center justify-center bg-gray-900 bg-opacity-80 z-50">
-        <Card className="p-6 text-center max-w-md">
-          <h2 className="text-2xl font-bold mb-4">{getGameResult().title}</h2>
-          <p className="mb-4">{getGameResult().message}</p>
-          <div className="bg-gray-100 p-4 rounded-lg mb-4">
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div>
-                <div className="font-semibold">Puntuación Final</div>
-                <div className="text-2xl font-bold text-blue-600">{gameState.score}</div>
-              </div>
-              <div>
-                <div className="font-semibold">Entregas</div>
-                <div className="text-2xl font-bold text-green-600">
-                  {gameState.deliveriesCompleted}/{REQUIRED_DELIVERIES}
+          <Card className="p-6 text-center max-w-md">
+            <h2 className="text-2xl font-bold mb-4">{getGameResult().title}</h2>
+            <p className="mb-4">{getGameResult().message}</p>
+            <div className="bg-gray-100 p-4 rounded-lg mb-4">
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <div className="font-semibold">Puntuación Final</div>
+                  <div className="text-2xl font-bold text-blue-600">{gameState.score}</div>
                 </div>
-              </div>
-              <div>
-                <div className="font-semibold">Pizzas Usadas</div>
-                <div className="text-lg">
-                  {TOTAL_PIZZAS - gameState.pizzasRemaining}/{TOTAL_PIZZAS}
+                <div>
+                  <div className="font-semibold">Entregas</div>
+                  <div className="text-2xl font-bold text-green-600">
+                    {gameState.deliveriesCompleted}/{REQUIRED_DELIVERIES}
+                  </div>
                 </div>
-              </div>
-              <div>
-                <div className="font-semibold">Tiempo Restante</div>
-                <div className="text-lg">{formatTime(gameState.timeLeft)}</div>
+                <div>
+                  <div className="font-semibold">Pizzas Usadas</div>
+                  <div className="text-lg">
+                    {TOTAL_PIZZAS - gameState.pizzasRemaining}/{TOTAL_PIZZAS}
+                  </div>
+                </div>
+                <div>
+                  <div className="font-semibold">Tiempo Restante</div>
+                  <div className="text-lg">{formatTime(gameState.timeLeft)}</div>
+                </div>
               </div>
             </div>
-          </div>
-          <Button onClick={initGame} className="w-full">
-            🔄 Jugar de Nuevo
-          </Button>
-        </Card>
+            <Button onClick={initGame} className="w-full">
+              🔄 Jugar de Nuevo
+            </Button>
+          </Card>
         </div>
       )}
 
